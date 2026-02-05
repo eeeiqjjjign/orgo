@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands, tasks
 import os
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import re
@@ -46,17 +45,16 @@ async def reminder_loop():
 
     now_utc = datetime.now(timezone.utc)
     deadline_utc = now_utc.replace(hour=23, minute=0, second=0, microsecond=0)
-    
     if now_utc > deadline_utc:
         deadline_utc += timedelta(days=1)
-    
+
     diff = deadline_utc - now_utc
     total_seconds = int(diff.total_seconds())
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
-    
+
     mentions = " ".join([f"<@{uid}>" for uid in REMINDER_USERS])
-    
+
     if hours == 23 and minutes > 50:
         time_str = "23 hours"
         message = f"🔔 {mentions}\n**Upload the video!**\n{time_str} left till your schedule, make sure to post 3 shorts by then!"
@@ -65,9 +63,7 @@ async def reminder_loop():
             time_str = f"**{hours} hours and {minutes} minutes**" if minutes > 0 else f"**{hours} hours**"
         else:
             time_str = f"**{minutes} minutes**"
-            
         message = f"🔔 {mentions}\n**Upload the video!**\nYou have {time_str} left till deadline to post 3 shorts every day (<t:1769900400:t>)."
-        
     await channel.send(message)
 
 @bot.event
@@ -103,7 +99,7 @@ async def set_interval(ctx, minutes: int):
     if minutes < 1:
         await ctx.send("❌ Interval must be at least 1 minute.")
         return
-    
+
     REMINDER_INTERVAL_MINS = minutes
     reminder_loop.change_interval(minutes=minutes)
     await ctx.send(f"✅ Reminder interval set to **{minutes} minutes**.")
@@ -120,7 +116,7 @@ async def save(ctx):
             return
 
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    
+
     if not log_channel:
         try:
             log_channel = await bot.fetch_channel(LOG_CHANNEL_ID)
@@ -129,10 +125,10 @@ async def save(ctx):
             return
 
     await log_channel.send(f"🚀 Starting backup for channel: **#{source_channel.name}** ({source_channel.id})")
-    
+
     messages = []
     count = 0
-    
+
     try:
         async for msg in source_channel.history(limit=None, oldest_first=True):
             content = msg.content if msg.content else "[No text content]"
@@ -145,14 +141,11 @@ async def save(ctx):
                         parts.append(f"{field.name}: {field.value}")
                     if parts:
                         content += " [Embed: " + " | ".join(parts) + "]"
-            
             author_name = msg.author.name
             if msg.webhook_id:
                 author_name = f"[Webhook] {author_name}"
-            
             messages.append(f"[{msg.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {author_name}: {content}")
             count += 1
-            
             if count % 1000 == 0:
                 try:
                     await log_channel.send(f"⏳ Progress: **{count}** messages fetched...")
@@ -178,7 +171,7 @@ async def save(ctx):
         else:
             await log_channel.send("No messages found.")
             await ctx.send("No messages found.")
-            
+
     except discord.errors.HTTPException as e:
         if e.status == 429:
             await ctx.send("Critical Rate Limit. Try again later.")
@@ -200,7 +193,7 @@ async def log_uploads(ctx):
     await ctx.send("⏳ Fetching uploads...")
     two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
     user_uploads = {}
-    
+
     try:
         async for msg in source_channel.history(limit=None, after=two_weeks_ago):
             match = re.search(r"New video by\s+(.+)", msg.content, re.IGNORECASE)
@@ -255,7 +248,6 @@ async def leaderboard(ctx, days: int = 7):
     for uid in stats:
         stats[uid]['staff_score'] = (stats[uid]['thanks'] * 5) + (stats[uid]['links'] * 10)
         stats[uid]['activity_score'] = stats[uid]['messages']
-    
     s_best = sorted(stats.values(), key=lambda x: x['staff_score'], reverse=True)
     report = f"🏆 **LEADERBOARD**\n\n✨ **BEST STAFF**\n" + "\n".join([f"{i+1}. {u['member'].mention} — **{u['staff_score']}**" for i, u in enumerate(s_best) if u['staff_score'] > 0])
     await leaderboard_channel.send(report[:2000])
