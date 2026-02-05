@@ -5,9 +5,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import re
-from collections import Counter
 
-# Set up logging to see details in Replit console
 logging.basicConfig(level=logging.INFO)
 
 intents = discord.Intents.default()
@@ -17,7 +15,6 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='.', intents=intents)
 
-# Configuration
 SOURCE_CHANNEL_ID = 1463707650037645455
 LOG_CHANNEL_ID = 1383649215321870407
 LEADERBOARD_CHANNEL_ID = 1419533221925752964
@@ -47,7 +44,6 @@ async def reminder_loop():
         except:
             return
 
-    # 6 PM EST is 11 PM UTC (23:00)
     now_utc = datetime.now(timezone.utc)
     deadline_utc = now_utc.replace(hour=23, minute=0, second=0, microsecond=0)
     
@@ -70,7 +66,7 @@ async def reminder_loop():
         else:
             time_str = f"**{minutes} minutes**"
             
-        message = f"🔔 {mentions}\n**Upload the video!**\nYou have {time_str} left till deadline to post 3 shorts every day (6 PM EST)."
+        message = f"🔔 {mentions}\n**Upload the video!**\nYou have {time_str} left till deadline to post 3 shorts every day (<t:1769900400:t>)."
         
     await channel.send(message)
 
@@ -83,6 +79,7 @@ async def on_ready():
 @bot.command()
 @commands.check(is_owner)
 async def adduser(ctx, user: discord.User):
+    global REMINDER_USERS
     if user.id not in REMINDER_USERS:
         REMINDER_USERS.append(user.id)
         await ctx.send(f"✅ Added {user.mention} to the reminder list.")
@@ -92,6 +89,7 @@ async def adduser(ctx, user: discord.User):
 @bot.command()
 @commands.check(is_owner)
 async def removeuser(ctx, user: discord.User):
+    global REMINDER_USERS
     if user.id in REMINDER_USERS:
         REMINDER_USERS.remove(user.id)
         await ctx.send(f"✅ Removed {user.mention} from the reminder list.")
