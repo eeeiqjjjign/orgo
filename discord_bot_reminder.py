@@ -18,7 +18,6 @@ SOURCE_CHANNEL_ID = 1463707650037645455
 LOG_CHANNEL_ID = 1383649215321870407
 LEADERBOARD_CHANNEL_ID = 1419533221925752964
 REMINDER_CHANNEL_ID = 1468407822860423273
-REMINDER_USERS = [1086571236160708709, 1444845857701630094, 1210942252264857673, 1458104862834167824]
 
 STAFF_ROLES = [
     1417970527250677821,
@@ -30,6 +29,26 @@ STAFF_ROLES = [
 
 LEADERBOARD_CHANNELS = [1417960723363008722, 1417961665902940332]
 REMINDER_INTERVAL_MINS = 60
+
+REMINDER_USERS_FILE = "reminder_users.txt"
+
+def load_reminder_users():
+    if os.path.exists(REMINDER_USERS_FILE):
+        with open(REMINDER_USERS_FILE, "r") as f:
+            return [int(line.strip()) for line in f if line.strip().isdigit()]
+    else:
+        default_users = [1086571236160708709, 1444845857701630094, 1210942252264857673, 1458104862834167824]
+        with open(REMINDER_USERS_FILE, "w") as f:
+            for uid in default_users:
+                f.write(f"{uid}\n")
+        return default_users
+
+def save_reminder_users(users):
+    with open(REMINDER_USERS_FILE, "w") as f:
+        for uid in users:
+            f.write(f"{uid}\n")
+
+REMINDER_USERS = load_reminder_users()
 
 def is_owner(ctx):
     return ctx.author.id == 608461552034643992
@@ -78,6 +97,7 @@ async def adduser(ctx, user: discord.User):
     global REMINDER_USERS
     if user.id not in REMINDER_USERS:
         REMINDER_USERS.append(user.id)
+        save_reminder_users(REMINDER_USERS)
         await ctx.send(f"✅ Added {user.mention} to the reminder list.")
     else:
         await ctx.send(f"ℹ️ {user.mention} is already in the list.")
@@ -88,6 +108,7 @@ async def removeuser(ctx, user: discord.User):
     global REMINDER_USERS
     if user.id in REMINDER_USERS:
         REMINDER_USERS.remove(user.id)
+        save_reminder_users(REMINDER_USERS)
         await ctx.send(f"✅ Removed {user.mention} from the reminder list.")
     else:
         await ctx.send(f"ℹ️ {user.mention} is not in the list.")
