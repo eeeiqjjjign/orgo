@@ -6,10 +6,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 import re
 from collections import Counter
-from keep_alive import keep_alive
 
-keep_alive()
-
+# Set up logging to see details in Replit console
 logging.basicConfig(level=logging.INFO)
 
 intents = discord.Intents.default()
@@ -19,6 +17,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='.', intents=intents)
 
+# Configuration
 SOURCE_CHANNEL_ID = 1463707650037645455
 LOG_CHANNEL_ID = 1383649215321870407
 LEADERBOARD_CHANNEL_ID = 1419533221925752964
@@ -34,36 +33,82 @@ STAFF_ROLES = [
 ]
 
 LEADERBOARD_CHANNELS = [1417960723363008722, 1417961665902940332]
+REMINDER_INTERVAL_MINS = 60
 
 def is_owner(ctx):
     return ctx.author.id == 608461552034643992
 
-@tasks.loop(hours=1)
-async def hourly_reminder():
+@tasks.loop(minutes=60)
+async def reminder_loop():
     channel = bot.get_channel(REMINDER_CHANNEL_ID)
     if not channel:
         try:
             channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
         except:
             return
+
+    # 6 PM EST is 11 PM UTC (23:00)
     now_utc = datetime.now(timezone.utc)
     deadline_utc = now_utc.replace(hour=23, minute=0, second=0, microsecond=0)
+    
     if now_utc > deadline_utc:
         deadline_utc += timedelta(days=1)
+    
     diff = deadline_utc - now_utc
-    hours_left = int(diff.total_seconds() // 3600)
+    total_seconds = int(diff.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    
     mentions = " ".join([f"<@{uid}>" for uid in REMINDER_USERS])
-    if hours_left == 23:
-        message = f"🔔 {mentions}\n**Upload the video!**\n23 hours left till your schedule, make sure to post 3 shorts by then!"
+    
+    if hours == 23 and minutes > 50:
+        time_str = "23 hours"
+        message = f"🔔 {mentions}\n**Upload the video!**\n{time_str} left till your schedule, make sure to post 3 shorts by then!"
     else:
-        message = f"🔔 {mentions}\n**Upload the video!**\nYou have **{max(0, hours_left)} hours** left till deadline to post 3 shorts every day (6 PM EST)."
+        if hours > 0:
+            time_str = f"**{hours} hours and {minutes} minutes**" if minutes > 0 else f"**{hours} hours**"
+        else:
+            time_str = f"**{minutes} minutes**"
+            
+        message = f"🔔 {mentions}\n**Upload the video!**\nYou have {time_str} left till deadline to post 3 shorts every day (6 PM EST)."
+        
     await channel.send(message)
 
 @bot.event
 async def on_ready():
     print(f'Bot is logged in as {bot.user}')
-    if not hourly_reminder.is_running():
-        hourly_reminder.start()
+    if not reminder_loop.is_running():
+        reminder_loop.start()
+
+@bot.command()
+@commands.check(is_owner)
+async def adduser(ctx, user: discord.User):
+    if user.id not in REMINDER_USERS:
+        REMINDER_USERS.append(user.id)
+        await ctx.send(f"✅ Added {user.mention} to the reminder list.")
+    else:
+        await ctx.send(f"ℹ️ {user.mention} is already in the list.")
+
+@bot.command()
+@commands.check(is_owner)
+async def removeuser(ctx, user: discord.User):
+    if user.id in REMINDER_USERS:
+        REMINDER_USERS.remove(user.id)
+        await ctx.send(f"✅ Removed {user.mention} from the reminder list.")
+    else:
+        await ctx.send(f"ℹ️ {user.mention} is not in the list.")
+
+@bot.command()
+@commands.check(is_owner)
+async def set_interval(ctx, minutes: int):
+    global REMINDER_INTERVAL_MINS
+    if minutes < 1:
+        await ctx.send("❌ Interval must be at least 1 minute.")
+        return
+    
+    REMINDER_INTERVAL_MINS = minutes
+    reminder_loop.change_interval(minutes=minutes)
+    await ctx.send(f"✅ Reminder interval set to **{minutes} minutes**.")
 
 @bot.command()
 @commands.check(is_owner)
@@ -75,16 +120,21 @@ async def save(ctx):
         except:
             await ctx.send(f"Error: Could not find source channel with ID {SOURCE_CHANNEL_ID}")
             return
+
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    
     if not log_channel:
         try:
             log_channel = await bot.fetch_channel(LOG_CHANNEL_ID)
         except:
             await ctx.send(f"Error: Could not find log channel with ID {LOG_CHANNEL_ID}")
             return
+
     await log_channel.send(f"🚀 Starting backup for channel: **#{source_channel.name}** ({source_channel.id})")
+    
     messages = []
     count = 0
+    
     try:
         async for msg in source_channel.history(limit=None, oldest_first=True):
             content = msg.content if msg.content else "[No text content]"
@@ -97,11 +147,14 @@ async def save(ctx):
                         parts.append(f"{field.name}: {field.value}")
                     if parts:
                         content += " [Embed: " + " | ".join(parts) + "]"
+            
             author_name = msg.author.name
             if msg.webhook_id:
                 author_name = f"[Webhook] {author_name}"
+            
             messages.append(f"[{msg.created_at.strftime('%Y-%m-%d %H:%M:%S')}] {author_name}: {content}")
             count += 1
+            
             if count % 1000 == 0:
                 try:
                     await log_channel.send(f"⏳ Progress: **{count}** messages fetched...")
@@ -110,10 +163,13 @@ async def save(ctx):
                         await asyncio.sleep(e.retry_after if hasattr(e, 'retry_after') else 10)
                         await log_channel.send(f"⏳ Progress: **{count}** messages fetched...")
                 await asyncio.sleep(0.05)
+
         await log_channel.send(f"✅ Finished fetching all **{count}** messages. Generating file...")
+
         filename = f"messages_{source_channel.id}.txt"
         with open(filename, "w", encoding='utf-8') as f:
             f.write('\n'.join(messages))
+
         if len(messages) > 0:
             try:
                 await log_channel.send(content=f"📦 Backup complete for **#{source_channel.name}**", file=discord.File(filename))
@@ -124,6 +180,7 @@ async def save(ctx):
         else:
             await log_channel.send("No messages found.")
             await ctx.send("No messages found.")
+            
     except discord.errors.HTTPException as e:
         if e.status == 429:
             await ctx.send("Critical Rate Limit. Try again later.")
@@ -141,9 +198,11 @@ async def log_uploads(ctx):
     if not log_channel:
         try: log_channel = await bot.fetch_channel(LOG_CHANNEL_ID)
         except: return
+
     await ctx.send("⏳ Fetching uploads...")
     two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
     user_uploads = {}
+    
     try:
         async for msg in source_channel.history(limit=None, after=two_weeks_ago):
             match = re.search(r"New video by\s+(.+)", msg.content, re.IGNORECASE)
@@ -153,6 +212,7 @@ async def log_uploads(ctx):
                     date_str = msg.created_at.strftime('%B %-d')
                     if uploader not in user_uploads: user_uploads[uploader] = []
                     user_uploads[uploader].append(date_str)
+
         if user_uploads:
             lines = [f"- **{u}** ({', '.join(d)})" for u, d in user_uploads.items()]
             report = "📋 **Uploads:**\n" + "\n".join(lines)
@@ -197,6 +257,7 @@ async def leaderboard(ctx, days: int = 7):
     for uid in stats:
         stats[uid]['staff_score'] = (stats[uid]['thanks'] * 5) + (stats[uid]['links'] * 10)
         stats[uid]['activity_score'] = stats[uid]['messages']
+    
     s_best = sorted(stats.values(), key=lambda x: x['staff_score'], reverse=True)
     report = f"🏆 **LEADERBOARD**\n\n✨ **BEST STAFF**\n" + "\n".join([f"{i+1}. {u['member'].mention} — **{u['staff_score']}**" for i, u in enumerate(s_best) if u['staff_score'] > 0])
     await leaderboard_channel.send(report[:2000])
