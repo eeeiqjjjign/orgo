@@ -29,7 +29,7 @@ MANAGED_ROLES = [
     1417968485031608443, 
     1427466045324787742, 
     1418029602735128586, 
-    1417968485031608443
+    1417970206990532730
 ]
 
 USER_MAPPING = {
@@ -157,7 +157,6 @@ async def set_interval_error(ctx, error):
 @bot.event
 async def on_message(message):
     if message.channel.id == VIDEO_TRACK_CHANNEL_ID:
-        # Check if any demoted user just posted
         for uid_str in list(demoted_users.keys()):
             name = USER_MAPPING.get(int(uid_str))
             if name:
@@ -181,7 +180,6 @@ async def check_demotion_loop():
             track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
-        # First pass for standard 1-day users
         async for msg in track_channel.history(limit=500, after=last_reset):
             content = msg.content
             if not content and msg.embeds:
@@ -191,7 +189,7 @@ async def check_demotion_loop():
                     if embed.title: content += f" {embed.title}"
 
             for uid, name in USER_MAPPING.items():
-                if uid not in SPECIAL_QUOTA: # Only standard users here
+                if uid not in SPECIAL_QUOTA:
                     pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
                     if re.search(pattern, content, re.IGNORECASE):
                         current_counts[uid] += 1
@@ -200,7 +198,6 @@ async def check_demotion_loop():
                             if not re.search(pattern, content, re.IGNORECASE):
                                 current_counts[uid] += 1
         
-        # Second pass for special quota users
         for uid, quota in SPECIAL_QUOTA.items():
             if quota["days"] > 1:
                 window_start = deadline_utc - timedelta(days=quota["days"])
@@ -368,7 +365,7 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline.")
+        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
 
