@@ -274,6 +274,7 @@ async def reminder_loop():
                          current_counts[uid] += 1
 
     mentions_list = []
+    completed_list = []
     for uid, name in USER_MAPPING.items():
         uid_str = str(uid)
         count = current_counts[uid]
@@ -288,19 +289,35 @@ async def reminder_loop():
                 if today_count < 3:
                     needed = 3 - today_count
                     mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts")
+                else:
+                    completed_list.append(f"✅ **{name}** uploaded his 3 shorts for today! He's good.")
         else:
             if count < 3:
                 needed = 3 - count
                 mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts")
+            else:
+                completed_list.append(f"✅ **{name}** uploaded his 3 shorts for today! He's good.")
 
-    if not mentions_list:
+    if not mentions_list and not completed_list:
         return
 
     mentions_str = "\n".join(mentions_list)
+    completed_str = "\n".join(completed_list)
     time_str = f"**{hours}h {minutes}m**" if hours > 0 else f"**{minutes}m**"
     
-    message = f"🔔 **Upload the video!**\n{mentions_str}\n\nYou have {time_str} left till deadline (<t:1769900400:t>)."
-    await channel.send(message)
+    msg_parts = []
+    if mentions_list:
+        msg_parts.append(f"🔔 **Upload the video!**\n{mentions_str}")
+    
+    if completed_list:
+        msg_parts.append(f"\n{completed_str}")
+    
+    if mentions_list:
+        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
+    else:
+        msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
+
+    await channel.send("\n".join(msg_parts))
 
 @bot.event
 async def on_ready():
