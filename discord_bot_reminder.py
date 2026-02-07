@@ -29,7 +29,7 @@ MANAGED_ROLES = [
     1417968485031608443, 
     1427466045324787742, 
     1418029602735128586, 
-    1417970206990532730
+    1417968485031608443
 ]
 
 USER_MAPPING = {
@@ -277,28 +277,19 @@ async def reminder_loop():
 
     current_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=200, after=last_reset):
-        # Look for the "posted a new video!" message, often from a bot/webhook
         content = msg.content
-        # Check embeds as well, as some notifications use them
         if not content and msg.embeds:
             for embed in msg.embeds:
-                if embed.description:
-                    content += embed.description
-                if embed.author and embed.author.name:
-                    content += f" {embed.author.name}"
-                if embed.title:
-                    content += f" {embed.title}"
+                if embed.description: content += embed.description
+                if embed.author and embed.author.name: content += f" {embed.author.name}"
+                if embed.title: content += f" {embed.title}"
 
         for uid, name in USER_MAPPING.items():
-            # Check for the specific "name just posted a new video!" pattern
-            # Also check if the message is from a bot and mentions the name in the title/description
             pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
             if re.search(pattern, content, re.IGNORECASE):
                 current_counts[uid] += 1
             elif msg.author.bot and name.lower() in content.lower():
-                # Fallback: if a bot sends a message containing the name and it looks like an upload
                 if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower() or "youtube.com" in content.lower():
-                     # To avoid double counting, check if we already matched the pattern
                      if not re.search(pattern, content, re.IGNORECASE):
                          current_counts[uid] += 1
 
@@ -308,12 +299,10 @@ async def reminder_loop():
         uid_str = str(uid)
         count = current_counts[uid]
         
-        # Determine quota for this user
         quota_data = SPECIAL_QUOTA.get(uid, {"count": 3, "days": 1})
         required_count = quota_data["count"]
         days_window = quota_data["days"]
         
-        # If the window is more than 1 day, we need to re-calculate count for that window
         if days_window > 1:
             window_start = deadline_utc - timedelta(days=days_window)
             count = 0
@@ -342,15 +331,27 @@ async def reminder_loop():
                 today_count = count - missing_from_yesterday
                 if today_count < required_count:
                     needed = required_count - today_count
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
+                    if days_window > 1:
+                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
+                    else:
+                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
                 else:
-                    completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
+                    if days_window > 1:
+                        completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
+                    else:
+                        completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
         else:
             if count < required_count:
                 needed = required_count - count
-                mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
+                if days_window > 1:
+                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
+                else:
+                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
             else:
-                completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
+                if days_window > 1:
+                    completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
+                else:
+                    completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
 
     if not mentions_list and not completed_list:
         return
@@ -367,7 +368,7 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
+        msg_parts.append(f"\nYou have {time_str} left till deadline.")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
 
@@ -376,11 +377,8 @@ async def reminder_loop():
 @bot.event
 async def on_ready():
     print(f'Bot is logged in as {bot.user}')
-    
-    # Set the reminder interval from config
     interval = config.get("reminder_interval", 60)
     reminder_loop.change_interval(minutes=interval)
-    
     if not reminder_loop.is_running(): reminder_loop.start()
     if not check_demotion_loop.is_running(): check_demotion_loop.start()
     if not track_restoration_loop.is_running(): track_restoration_loop.start()
