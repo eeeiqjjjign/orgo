@@ -40,6 +40,10 @@ USER_MAPPING = {
     1210942252264857673: "RINGTA EMPIRE"
 }
 
+SPECIAL_QUOTA = {
+    1086571236160708709: {"count": 1, "days": 3}
+}
+
 DEMOTED_USERS_FILE = "demoted_users.json"
 CONFIG_FILE = "config.json"
 
@@ -177,6 +181,7 @@ async def check_demotion_loop():
             track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
+        # First pass for standard 1-day users
         async for msg in track_channel.history(limit=500, after=last_reset):
             content = msg.content
             if not content and msg.embeds:
@@ -186,17 +191,41 @@ async def check_demotion_loop():
                     if embed.title: content += f" {embed.title}"
 
             for uid, name in USER_MAPPING.items():
-                pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-                if re.search(pattern, content, re.IGNORECASE):
-                    current_counts[uid] += 1
-                elif msg.author.bot and name.lower() in content.lower():
-                    if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
-                        if not re.search(pattern, content, re.IGNORECASE):
-                            current_counts[uid] += 1
+                if uid not in SPECIAL_QUOTA: # Only standard users here
+                    pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+                    if re.search(pattern, content, re.IGNORECASE):
+                        current_counts[uid] += 1
+                    elif msg.author.bot and name.lower() in content.lower():
+                        if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                            if not re.search(pattern, content, re.IGNORECASE):
+                                current_counts[uid] += 1
         
+        # Second pass for special quota users
+        for uid, quota in SPECIAL_QUOTA.items():
+            if quota["days"] > 1:
+                window_start = deadline_utc - timedelta(days=quota["days"])
+                name = USER_MAPPING.get(uid)
+                async for msg in track_channel.history(limit=500, after=window_start):
+                    content = msg.content
+                    if not content and msg.embeds:
+                        for embed in msg.embeds:
+                            if embed.description: content += embed.description
+                            if embed.author and embed.author.name: content += f" {embed.author.name}"
+                            if embed.title: content += f" {embed.title}"
+                    
+                    pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+                    if re.search(pattern, content, re.IGNORECASE):
+                        current_counts[uid] += 1
+                    elif msg.author.bot and name.lower() in content.lower():
+                        if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                            if not re.search(pattern, content, re.IGNORECASE):
+                                current_counts[uid] += 1
+
         guild = track_channel.guild
         for uid, count in current_counts.items():
-            if count < 3:
+            quota = SPECIAL_QUOTA.get(uid, {"count": 3})
+            required = quota["count"]
+            if count < required:
                 member = guild.get_member(uid)
                 if not member:
                     try: member = await guild.fetch_member(uid)
@@ -209,13 +238,13 @@ async def check_demotion_loop():
                     
                     demoted_users[str(uid)] = {
                         "roles": roles_to_remove,
-                        "missing": 3 - count
+                        "missing": required - count
                     }
                     save_demoted_data(demoted_users)
                     
                     log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
                     if log_channel:
-                        await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {3-count} videos today.")
+                        await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
 
 @tasks.loop(minutes=5)
 async def track_restoration_loop():
@@ -279,6 +308,31 @@ async def reminder_loop():
         uid_str = str(uid)
         count = current_counts[uid]
         
+        # Determine quota for this user
+        quota_data = SPECIAL_QUOTA.get(uid, {"count": 3, "days": 1})
+        required_count = quota_data["count"]
+        days_window = quota_data["days"]
+        
+        # If the window is more than 1 day, we need to re-calculate count for that window
+        if days_window > 1:
+            window_start = deadline_utc - timedelta(days=days_window)
+            count = 0
+            async for msg in track_channel.history(limit=500, after=window_start):
+                content = msg.content
+                if not content and msg.embeds:
+                    for embed in msg.embeds:
+                        if embed.description: content += embed.description
+                        if embed.author and embed.author.name: content += f" {embed.author.name}"
+                        if embed.title: content += f" {embed.title}"
+                
+                pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+                if re.search(pattern, content, re.IGNORECASE):
+                    count += 1
+                elif msg.author.bot and name.lower() in content.lower():
+                    if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                        if not re.search(pattern, content, re.IGNORECASE):
+                            count += 1
+
         if uid_str in demoted_users:
             missing_from_yesterday = demoted_users[uid_str]["missing"]
             if count < missing_from_yesterday:
@@ -286,17 +340,17 @@ async def reminder_loop():
                 mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts (to get roles back)")
             else:
                 today_count = count - missing_from_yesterday
-                if today_count < 3:
-                    needed = 3 - today_count
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts")
+                if today_count < required_count:
+                    needed = required_count - today_count
+                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
                 else:
-                    completed_list.append(f"✅ **{name}** uploaded his 3 shorts for today! He's good.")
+                    completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
         else:
-            if count < 3:
-                needed = 3 - count
-                mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts")
+            if count < required_count:
+                needed = required_count - count
+                mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
             else:
-                completed_list.append(f"✅ **{name}** uploaded his 3 shorts for today! He's good.")
+                completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
 
     if not mentions_list and not completed_list:
         return
