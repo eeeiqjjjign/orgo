@@ -257,7 +257,7 @@ async def reminder_loop():
     mentions_str = "\n".join(mentions_list)
     time_str = f"**{hours}h {minutes}m**" if hours > 0 else f"**{minutes}m**"
     
-    message = f"🔔 **Upload the video!**\n{mentions_str}\n\nYou have {time_str} left till deadline (6 PM EST)."
+    message = f"🔔 **Upload the video!**\n{mentions_str}\n\nYou have {time_str} left till deadline (<t:1769900400:t>)."
     await channel.send(message)
 
 @bot.event
