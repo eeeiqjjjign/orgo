@@ -97,10 +97,21 @@ async def check_user_restoration(uid_str):
     data = demoted_users[uid_str]
     
     new_count = 0
-    async for msg in track_channel.history(limit=100, after=last_reset):
+    async for msg in track_channel.history(limit=200, after=last_reset):
+        content = msg.content
+        if not content and msg.embeds:
+            for embed in msg.embeds:
+                if embed.description: content += embed.description
+                if embed.author and embed.author.name: content += f" {embed.author.name}"
+                if embed.title: content += f" {embed.title}"
+
         pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-        if re.search(pattern, msg.content, re.IGNORECASE):
+        if re.search(pattern, content, re.IGNORECASE):
             new_count += 1
+        elif msg.author.bot and name.lower() in content.lower():
+            if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                if not re.search(pattern, content, re.IGNORECASE):
+                    new_count += 1
     
     if new_count >= data["missing"]:
         member = guild.get_member(uid)
@@ -166,11 +177,22 @@ async def check_demotion_loop():
             track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
-        async for msg in track_channel.history(limit=None, after=last_reset):
+        async for msg in track_channel.history(limit=500, after=last_reset):
+            content = msg.content
+            if not content and msg.embeds:
+                for embed in msg.embeds:
+                    if embed.description: content += embed.description
+                    if embed.author and embed.author.name: content += f" {embed.author.name}"
+                    if embed.title: content += f" {embed.title}"
+
             for uid, name in USER_MAPPING.items():
                 pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-                if re.search(pattern, msg.content, re.IGNORECASE):
+                if re.search(pattern, content, re.IGNORECASE):
                     current_counts[uid] += 1
+                elif msg.author.bot and name.lower() in content.lower():
+                    if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                        if not re.search(pattern, content, re.IGNORECASE):
+                            current_counts[uid] += 1
         
         guild = track_channel.guild
         for uid, count in current_counts.items():
@@ -225,11 +247,31 @@ async def reminder_loop():
         except: return
 
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    async for msg in track_channel.history(limit=None, after=last_reset):
+    async for msg in track_channel.history(limit=200, after=last_reset):
+        # Look for the "posted a new video!" message, often from a bot/webhook
+        content = msg.content
+        # Check embeds as well, as some notifications use them
+        if not content and msg.embeds:
+            for embed in msg.embeds:
+                if embed.description:
+                    content += embed.description
+                if embed.author and embed.author.name:
+                    content += f" {embed.author.name}"
+                if embed.title:
+                    content += f" {embed.title}"
+
         for uid, name in USER_MAPPING.items():
+            # Check for the specific "name just posted a new video!" pattern
+            # Also check if the message is from a bot and mentions the name in the title/description
             pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-            if re.search(pattern, msg.content, re.IGNORECASE):
+            if re.search(pattern, content, re.IGNORECASE):
                 current_counts[uid] += 1
+            elif msg.author.bot and name.lower() in content.lower():
+                # Fallback: if a bot sends a message containing the name and it looks like an upload
+                if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower() or "youtube.com" in content.lower():
+                     # To avoid double counting, check if we already matched the pattern
+                     if not re.search(pattern, content, re.IGNORECASE):
+                         current_counts[uid] += 1
 
     mentions_list = []
     for uid, name in USER_MAPPING.items():
