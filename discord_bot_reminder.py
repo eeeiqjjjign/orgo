@@ -11,8 +11,6 @@ from keep_alive import keep_alive
 
 keep_alive()
 
-
-
 logging.basicConfig(level=logging.INFO)
 
 intents = discord.Intents.default()
@@ -66,6 +64,62 @@ def get_next_deadline():
         deadline_utc += timedelta(days=1)
     return deadline_utc
 
+async def check_user_restoration(uid_str):
+    global demoted_users
+    if uid_str not in demoted_users:
+        return
+
+    uid = int(uid_str)
+    name = USER_MAPPING.get(uid)
+    if not name: return
+
+    track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
+    if not track_channel:
+        try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+        except: return
+
+    deadline_utc = get_next_deadline()
+    last_reset = deadline_utc - timedelta(days=1)
+    
+    guild = track_channel.guild
+    data = demoted_users[uid_str]
+    
+    new_count = 0
+    async for msg in track_channel.history(limit=100, after=last_reset):
+        pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+        if re.search(pattern, msg.content, re.IGNORECASE):
+            new_count += 1
+    
+    if new_count >= data["missing"]:
+        member = guild.get_member(uid)
+        if not member:
+            try: member = await guild.fetch_member(uid)
+            except: return
+        
+        roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
+        if roles_to_add:
+            await member.add_roles(*roles_to_add)
+            
+        log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today!")
+        
+        del demoted_users[uid_str]
+        save_demoted_data(demoted_users)
+
+@bot.event
+async def on_message(message):
+    if message.channel.id == VIDEO_TRACK_CHANNEL_ID:
+        # Check if any demoted user just posted
+        for uid_str in list(demoted_users.keys()):
+            name = USER_MAPPING.get(int(uid_str))
+            if name:
+                pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+                if re.search(pattern, message.content, re.IGNORECASE):
+                    await check_user_restoration(uid_str)
+    
+    await bot.process_commands(message)
+
 @tasks.loop(minutes=1)
 async def check_demotion_loop():
     global demoted_users
@@ -106,55 +160,16 @@ async def check_demotion_loop():
                     save_demoted_data(demoted_users)
                     
                     log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
-                    await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {3-count} videos today.")
+                    if log_channel:
+                        await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {3-count} videos today.")
 
 @tasks.loop(minutes=5)
 async def track_restoration_loop():
     global demoted_users
     if not demoted_users:
         return
-
-    track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
-    if not track_channel:
-        try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
-        except: return
-
-    now_utc = datetime.now(timezone.utc)
-    deadline_utc = get_next_deadline()
-    last_reset = deadline_utc - timedelta(days=1)
-    
-    guild = track_channel.guild
-    
-    updated = False
-    for uid_str, data in list(demoted_users.items()):
-        uid = int(uid_str)
-        name = USER_MAPPING.get(uid)
-        if not name: continue
-        
-        new_count = 0
-        async for msg in track_channel.history(limit=100, after=last_reset):
-            pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-            if re.search(pattern, msg.content, re.IGNORECASE):
-                new_count += 1
-        
-        if new_count >= data["missing"]:
-            member = guild.get_member(uid)
-            if not member:
-                try: member = await guild.fetch_member(uid)
-                except: continue
-            
-            roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
-            if roles_to_add:
-                await member.add_roles(*roles_to_add)
-                
-            log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
-            await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today!")
-            
-            del demoted_users[uid_str]
-            updated = True
-            
-    if updated:
-        save_demoted_data(demoted_users)
+    for uid_str in list(demoted_users.keys()):
+        await check_user_restoration(uid_str)
 
 @tasks.loop(minutes=60)
 async def reminder_loop():
