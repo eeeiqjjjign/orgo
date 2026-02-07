@@ -41,6 +41,7 @@ USER_MAPPING = {
 }
 
 DEMOTED_USERS_FILE = "demoted_users.json"
+CONFIG_FILE = "config.json"
 
 def load_demoted_data():
     if os.path.exists(DEMOTED_USERS_FILE):
@@ -52,7 +53,18 @@ def save_demoted_data(data):
     with open(DEMOTED_USERS_FILE, "w") as f:
         json.dump(data, f)
 
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {"reminder_interval": 60}
+
+def save_config(data):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f)
+
 demoted_users = load_demoted_data()
+config = load_config()
 
 def is_owner(ctx):
     return ctx.author.id == 608461552034643992
@@ -106,6 +118,26 @@ async def check_user_restoration(uid_str):
         
         del demoted_users[uid_str]
         save_demoted_data(demoted_users)
+
+@bot.command(name='set_interval')
+@commands.check(is_owner)
+async def set_interval(ctx, minutes: int):
+    if minutes < 1:
+        await ctx.send("Interval must be at least 1 minute.")
+        return
+    
+    config["reminder_interval"] = minutes
+    save_config(config)
+    
+    reminder_loop.change_interval(minutes=minutes)
+    await ctx.send(f"✅ Reminder interval set to {minutes} minutes.")
+
+@set_interval.error
+async def set_interval_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("❌ Only the owner can use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Please provide a time in minutes. Example: `.set_interval 20`")
 
 @bot.event
 async def on_message(message):
@@ -231,6 +263,11 @@ async def reminder_loop():
 @bot.event
 async def on_ready():
     print(f'Bot is logged in as {bot.user}')
+    
+    # Set the reminder interval from config
+    interval = config.get("reminder_interval", 60)
+    reminder_loop.change_interval(minutes=interval)
+    
     if not reminder_loop.is_running(): reminder_loop.start()
     if not check_demotion_loop.is_running(): check_demotion_loop.start()
     if not track_restoration_loop.is_running(): track_restoration_loop.start()
