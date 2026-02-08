@@ -191,13 +191,19 @@ async def run_demotion_check(is_first_of_day=False):
         period_end_est -= timedelta(days=1)
     
     period_end = period_end_est.astimezone(timezone.utc)
+    # If first message of the day, check 48 hours (2 days)
+    # Otherwise check 24 hours (1 day)
     check_days = 2 if is_first_of_day else 1
     period_start = period_end - timedelta(days=check_days)
+
+    logging.info(f"DEMOTION CHECK: first_of_day={is_first_of_day}, window={check_days}d, from={period_start} to={period_end}")
     
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
         try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
-        except: return
+        except: 
+            logging.error(f"FAILED TO FIND TRACK CHANNEL: {VIDEO_TRACK_CHANNEL_ID}")
+            return
         
     current_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=5000, after=period_start, before=period_end):
