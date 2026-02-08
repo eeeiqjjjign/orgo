@@ -171,13 +171,16 @@ async def check_demotion_loop():
     global demoted_users
     now_utc = datetime.now(timezone.utc)
     
+    # Trigger at 6:00 PM UTC
     if now_utc.hour == 18 and now_utc.minute == 0:
-        deadline_utc = get_next_deadline()
+        # For demotion, we check the period that just ended
+        deadline_utc = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
         last_reset = deadline_utc - timedelta(days=1)
         
         track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
         if not track_channel:
-            track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+            try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+            except: return
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
         async for msg in track_channel.history(limit=500, after=last_reset):
@@ -365,9 +368,8 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        # Calculate Unix timestamp for 6:00 PM UTC next deadline
-        deadline_ts = int(deadline_utc.timestamp())
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:{deadline_ts}:t>).")
+        # Use the requested hardcoded timestamp for the deadline message
+        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
 
