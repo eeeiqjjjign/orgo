@@ -50,7 +50,10 @@ CONFIG_FILE = "config.json"
 def load_demoted_data():
     if os.path.exists(DEMOTED_USERS_FILE):
         with open(DEMOTED_USERS_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except:
+                return {}
     return {}
 
 def save_demoted_data(data):
@@ -60,7 +63,10 @@ def save_demoted_data(data):
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except:
+                return {"reminder_interval": 60}
     return {"reminder_interval": 60}
 
 def save_config(data):
@@ -75,7 +81,6 @@ def is_owner(ctx):
 
 def get_next_deadline():
     now_utc = datetime.now(timezone.utc)
-    # Target 6:00 PM UTC
     deadline_utc = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
     if now_utc >= deadline_utc:
         deadline_utc += timedelta(days=1)
@@ -177,9 +182,7 @@ async def check_demotion_loop():
     global demoted_users
     now_utc = datetime.now(timezone.utc)
     
-    # We check if we are within the first minute of the 6 PM hour
     if now_utc.hour == 18 and now_utc.minute == 0:
-        # The period that just ended is from 6 PM yesterday to 6 PM today
         period_end = now_utc.replace(second=0, microsecond=0)
         period_start = period_end - timedelta(days=1)
         
@@ -236,8 +239,6 @@ async def check_demotion_loop():
             quota = SPECIAL_QUOTA.get(uid, {"count": 3})
             required = quota["count"]
             
-            # If they met their quota, they shouldn't be in demoted_users anymore (if they were)
-            # However, demotion logic is only for active members.
             if count < required:
                 member = guild.get_member(uid)
                 if not member:
@@ -248,22 +249,19 @@ async def check_demotion_loop():
                 if roles_to_remove:
                     roles_objects = [guild.get_role(rid) for rid in roles_to_remove if guild.get_role(rid)]
                     if roles_objects:
-                        await member.remove_roles(*roles_objects)
-                        
-                        demoted_users[str(uid)] = {
-                            "roles": roles_to_remove,
-                            "missing": required - count
-                        }
-                        save_demoted_data(demoted_users)
-                        
-                        log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
-                        if log_channel:
-                            await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
-            else:
-                # If they met the quota but were demoted, restore roles (though restoration loop handles this, let's be safe)
-                if str(uid) in demoted_users:
-                    # Logic here would be redundant with check_user_restoration but good for deadline sync
-                    pass
+                        try:
+                            await member.remove_roles(*roles_objects)
+                            demoted_users[str(uid)] = {
+                                "roles": roles_to_remove,
+                                "missing": required - count
+                            }
+                            save_demoted_data(demoted_users)
+                            
+                            log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+                            if log_channel:
+                                await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
+                        except Exception as e:
+                            logging.error(f"Failed to demote user {uid}: {e}")
 
 @tasks.loop(minutes=5)
 async def track_restoration_loop():
