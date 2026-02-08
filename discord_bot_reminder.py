@@ -357,8 +357,8 @@ async def reminder_loop():
                 current_counts[uid] += 1
             elif msg.author.bot and name.lower() in content.lower():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
-                     if not re.search(pattern, content, re.IGNORECASE):
-                         current_counts[uid] += 1
+                    if not re.search(pattern, content, re.IGNORECASE):
+                        current_counts[uid] += 1
 
     mentions_list = []
     completed_list = []
@@ -374,7 +374,7 @@ async def reminder_loop():
 
     embed = discord.Embed(
         title="📹 Video Upload Reminder",
-        description=f"Time remaining until next deadline (<t:1769900400:t>): **{time_str}**\n\n"
+        description=f"Time remaining until next deadline: **{time_str}**\n\n"
                     f"**Required:** 3 videos per day (unless specified otherwise).",
         color=discord.Color.orange()
     )
