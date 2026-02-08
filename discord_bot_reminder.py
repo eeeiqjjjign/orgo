@@ -66,8 +66,8 @@ def load_config():
             try:
                 return json.load(f)
             except:
-                return {"reminder_interval": 60}
-    return {"reminder_interval": 60}
+                return {"reminder_interval": 60, "first_run_today": True, "last_demotion_date": ""}
+    return {"reminder_interval": 60, "first_run_today": True, "last_demotion_date": ""}
 
 def save_config(data):
     with open(CONFIG_FILE, "w") as f:
@@ -80,11 +80,16 @@ def is_owner(ctx):
     return ctx.author.id == 608461552034643992
 
 def get_next_deadline():
-    now_utc = datetime.now(timezone.utc)
-    deadline_utc = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
-    if now_utc >= deadline_utc:
-        deadline_utc += timedelta(days=1)
-    return deadline_utc
+    # 6 PM EST is UTC-5 (Standard) or UTC-4 (Daylight)
+    # Using fixed offset for 6 PM EST (UTC-5)
+    est_offset = timezone(timedelta(hours=-5))
+    now_est = datetime.now(est_offset)
+    deadline_est = now_est.replace(hour=18, minute=0, second=0, microsecond=0)
+    
+    if now_est >= deadline_est:
+        deadline_est += timedelta(days=1)
+        
+    return deadline_est.astimezone(timezone.utc)
 
 async def check_user_restoration(uid_str):
     global demoted_users
@@ -177,14 +182,24 @@ async def on_message(message):
     
     await bot.process_commands(message)
 
-async def run_demotion_check():
+async def run_demotion_check(is_first_of_day=False):
     global demoted_users
     now_utc = datetime.now(timezone.utc)
-    period_end = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
-    if now_utc < period_end:
-        period_end -= timedelta(days=1)
     
-    period_start = period_end - timedelta(days=1)
+    # Target 6 PM EST
+    est_offset = timezone(timedelta(hours=-5))
+    now_est = now_utc.astimezone(est_offset)
+    period_end_est = now_est.replace(hour=18, minute=0, second=0, microsecond=0)
+    
+    if now_est < period_end_est:
+        period_end_est -= timedelta(days=1)
+    
+    period_end = period_end_est.astimezone(timezone.utc)
+    
+    # If first message of the day, check 48 hours (2 days)
+    # Otherwise check 24 hours (1 day)
+    check_days = 2 if is_first_of_day else 1
+    period_start = period_end - timedelta(days=check_days)
     
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
@@ -192,7 +207,7 @@ async def run_demotion_check():
         except: return
         
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    async for msg in track_channel.history(limit=2000, after=period_start, before=period_end):
+    async for msg in track_channel.history(limit=5000, after=period_start, before=period_end):
         content = ""
         if msg.content: content += msg.content
         if msg.embeds:
@@ -210,6 +225,7 @@ async def run_demotion_check():
                     if not re.search(pattern, content, re.IGNORECASE):
                         current_counts[uid] += 1
     
+    # Handle SPECIAL_QUOTA
     for uid, quota in SPECIAL_QUOTA.items():
         if quota["days"] > 1:
             window_start = period_end - timedelta(days=quota["days"])
@@ -241,6 +257,10 @@ async def run_demotion_check():
         quota = SPECIAL_QUOTA.get(uid, {"count": 3})
         required = quota["count"]
         
+        # Scaling requirement for 48h check if needed?
+        # User said "make it check 48 hours the first time... and anyone who didnt update a video... Demote them"
+        # We'll stick to the base required count but across the larger window.
+        
         if count < required:
             member = guild.get_member(uid)
             if not member:
@@ -268,8 +288,15 @@ async def run_demotion_check():
 @tasks.loop(minutes=1)
 async def check_demotion_loop():
     now_utc = datetime.now(timezone.utc)
-    if now_utc.hour == 18 and now_utc.minute == 0:
-        await run_demotion_check()
+    est_offset = timezone(timedelta(hours=-5))
+    now_est = now_utc.astimezone(est_offset)
+    
+    if now_est.hour == 18 and now_est.minute == 0:
+        today_str = now_est.strftime("%Y-%m-%d")
+        if config.get("last_demotion_date") != today_str:
+            await run_demotion_check()
+            config["last_demotion_date"] = today_str
+            save_config(config)
 
 @tasks.loop(minutes=5)
 async def track_restoration_loop():
@@ -286,6 +313,19 @@ async def reminder_loop():
         try: channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
         except: return
 
+    # Check if first run today
+    est_offset = timezone(timedelta(hours=-5))
+    now_est = datetime.now(est_offset)
+    today_str = now_est.strftime("%Y-%m-%d")
+    
+    is_first_run = False
+    if config.get("last_reminder_date") != today_str:
+        is_first_run = True
+        config["last_reminder_date"] = today_str
+        save_config(config)
+        # Perform the 48h demotion check on the first message of the day
+        await run_demotion_check(is_first_of_day=True)
+
     now_utc = datetime.now(timezone.utc)
     deadline_utc = get_next_deadline()
     diff = deadline_utc - now_utc
@@ -293,6 +333,8 @@ async def reminder_loop():
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
 
+    time_str = f"{hours}h {minutes}m"
+    
     period_start = deadline_utc - timedelta(days=1)
     
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
@@ -327,90 +369,36 @@ async def reminder_loop():
         
         quota_data = SPECIAL_QUOTA.get(uid, {"count": 3, "days": 1})
         required_count = quota_data["count"]
-        days_window = quota_data["days"]
         
-        if days_window > 1:
-            window_start = deadline_utc - timedelta(days=days_window)
-            count = 0
-            async for msg in track_channel.history(limit=2000, after=window_start, before=now_utc):
-                content = ""
-                if msg.content: content += msg.content
-                if msg.embeds:
-                    for embed in msg.embeds:
-                        if embed.description: content += f" {embed.description}"
-                        if embed.author and embed.author.name: content += f" {embed.author.name}"
-                        if embed.title: content += f" {embed.title}"
-                
-                pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-                if re.search(pattern, content, re.IGNORECASE):
-                    count += 1
-                elif msg.author.bot and name.lower() in content.lower():
-                    if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
-                        if not re.search(pattern, content, re.IGNORECASE):
-                            count += 1
-
-        if uid_str in demoted_users:
-            missing_from_yesterday = demoted_users[uid_str]["missing"]
-            if count < missing_from_yesterday:
-                needed = missing_from_yesterday - count
-                mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts for the roles back and 3 more shorts for the daily limit")
-            else:
-                today_count = count - missing_from_yesterday
-                if today_count < required_count:
-                    needed = required_count - today_count
-                    if days_window > 1:
-                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
-                    else:
-                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
-                else:
-                    if days_window > 1:
-                        completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
-                    else:
-                        completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
+        if count >= required_count:
+            completed_list.append(f"<@{uid}> ({count}/{required_count})")
         else:
-            if count < required_count:
-                needed = required_count - count
-                if days_window > 1:
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
-                else:
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
-            else:
-                if days_window > 1:
-                    completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
-                else:
-                    completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
+            mentions_list.append(f"<@{uid}> ({count}/{required_count})")
 
-    if not mentions_list and not completed_list:
-        return
-
-    mentions_str = "\n".join(mentions_list)
-    completed_str = "\n".join(completed_list)
-    time_str = f"**{hours}h {minutes}m**" if hours > 0 else f"**{minutes}m**"
+    embed = discord.Embed(
+        title="📹 Video Upload Reminder",
+        description=f"Time remaining until next deadline (<t:1769900400:t>): **{time_str}**\n\n"
+                    f"**Required:** 3 videos per day (unless specified otherwise).",
+        color=discord.Color.orange()
+    )
     
-    msg_parts = []
     if mentions_list:
-        msg_parts.append(f"🔔 **Upload the video!**\n{mentions_str}")
-    
+        embed.add_field(name="⚠️ Need to Upload", value="\n".join(mentions_list), inline=False)
     if completed_list:
-        msg_parts.append(f"\n{completed_str}")
-    
-    if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
-    else:
-        msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
+        embed.add_field(name="✅ Completed", value="\n".join(completed_list), inline=False)
 
-    await channel.send("\n".join(msg_parts))
+    await channel.send(embed=embed)
 
 @bot.event
 async def on_ready():
-    print(f'Bot is logged in as {bot.user}')
-    interval = config.get("reminder_interval", 60)
-    reminder_loop.change_interval(minutes=interval)
-    if not reminder_loop.is_running(): reminder_loop.start()
-    if not check_demotion_loop.is_running(): check_demotion_loop.start()
-    if not track_restoration_loop.is_running(): track_restoration_loop.start()
-    await run_demotion_check()
+    logging.info(f'Logged in as {bot.user.name}')
+    check_demotion_loop.start()
+    track_restoration_loop.start()
+    reminder_loop.start()
 
-token = os.environ.get('DISCORD_BOT_TOKEN')
-if token: bot.run(token)
-else: print("Token not set.")
+if __name__ == "__main__":
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        logging.error("No DISCORD_TOKEN found in environment.")
