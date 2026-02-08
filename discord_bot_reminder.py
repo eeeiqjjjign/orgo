@@ -2,14 +2,16 @@ import discord
 from discord.ext import commands, tasks
 import os
 import logging
-import asyncio
 from datetime import datetime, timedelta, timezone
 import re
 import json
 
-from keep_alive import keep_alive
-
-keep_alive()
+# Try to import keep_alive, but don't fail if it's missing (helps in different environments)
+try:
+    from keep_alive import keep_alive
+    keep_alive()
+except ImportError:
+    pass
 
 logging.basicConfig(level=logging.INFO)
 
@@ -50,23 +52,35 @@ CONFIG_FILE = "config.json"
 
 def load_demoted_data():
     if os.path.exists(DEMOTED_USERS_FILE):
-        with open(DEMOTED_USERS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(DEMOTED_USERS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 def save_demoted_data(data):
-    with open(DEMOTED_USERS_FILE, "w") as f:
-        json.dump(data, f)
+    try:
+        with open(DEMOTED_USERS_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return {"reminder_interval": 60}
 
 def save_config(data):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f)
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 demoted_users = load_demoted_data()
 config = load_config()
@@ -172,7 +186,6 @@ async def check_demotion_loop():
     global demoted_users
     now_utc = datetime.now(timezone.utc)
     
-    # Run at 23:00 UTC (Deadline)
     if now_utc.hour == 23 and now_utc.minute == 0:
         deadline_utc = get_next_deadline()
         last_reset = deadline_utc - timedelta(days=1)
@@ -238,7 +251,6 @@ async def check_demotion_loop():
                     roles_objects = [guild.get_role(rid) for rid in roles_to_remove if guild.get_role(rid)]
                     await member.remove_roles(*roles_objects)
                     
-                    # Store data for restoration
                     demoted_users[str(uid)] = {
                         "roles": roles_to_remove,
                         "missing": required - count
@@ -306,7 +318,6 @@ async def reminder_loop():
         required_count = quota_data["count"]
         days_window = quota_data["days"]
         
-        # Calculate window count if special quota
         if days_window > 1:
             window_start = deadline_utc - timedelta(days=days_window)
             count = 0
@@ -327,20 +338,17 @@ async def reminder_loop():
                             count += 1
 
         if uid_str in demoted_users:
-            # User is demoted, they need to restore first
             missing_to_restore = demoted_users[uid_str]["missing"]
             if count < missing_to_restore:
                 rem_restoration = missing_to_restore - count
                 mentions_list.append(f"<@{uid}> ({name}) needs **{rem_restoration}** more shorts for the roles back and 3 more shorts for the daily limit")
             else:
-                # Restoration count met, but loop might not have run yet
                 daily_missing = 3 - count if uid not in SPECIAL_QUOTA else 0
                 if daily_missing > 0:
                     mentions_list.append(f"<@{uid}> ({name}) needs **{daily_missing}** more shorts for today's quota")
                 else:
                     completed_list.append(f"✅ **{name}** uploaded his required videos! He's good.")
         else:
-            # Regular user tracking
             if count < required_count:
                 mentions_list.append(f"<@{uid}> ({name}) needs **{required_count - count}** more shorts or else he loses his roles till he uploads the required amount")
             else:
