@@ -386,7 +386,7 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:{int(deadline_utc.timestamp())}:t>).")
+        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
 
