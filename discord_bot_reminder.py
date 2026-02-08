@@ -75,6 +75,7 @@ def is_owner(ctx):
 
 def get_next_deadline():
     now_utc = datetime.now(timezone.utc)
+    # Target 6:00 PM UTC
     deadline_utc = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
     if now_utc >= deadline_utc:
         deadline_utc += timedelta(days=1)
@@ -101,11 +102,12 @@ async def check_user_restoration(uid_str):
     data = demoted_users[uid_str]
     
     new_count = 0
-    async for msg in track_channel.history(limit=200, after=last_reset):
-        content = msg.content
-        if not content and msg.embeds:
+    async for msg in track_channel.history(limit=500, after=last_reset):
+        content = ""
+        if msg.content: content += msg.content
+        if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += embed.description
+                if embed.description: content += f" {embed.description}"
                 if embed.author and embed.author.name: content += f" {embed.author.name}"
                 if embed.title: content += f" {embed.title}"
 
@@ -113,7 +115,7 @@ async def check_user_restoration(uid_str):
         if re.search(pattern, content, re.IGNORECASE):
             new_count += 1
         elif msg.author.bot and name.lower() in content.lower():
-            if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+            if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                 if not re.search(pattern, content, re.IGNORECASE):
                     new_count += 1
     
@@ -161,7 +163,11 @@ async def on_message(message):
             name = USER_MAPPING.get(int(uid_str))
             if name:
                 pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-                if re.search(pattern, message.content, re.IGNORECASE):
+                content = message.content or ""
+                if message.embeds:
+                    for embed in message.embeds:
+                        if embed.description: content += f" {embed.description}"
+                if re.search(pattern, content, re.IGNORECASE):
                     await check_user_restoration(uid_str)
     
     await bot.process_commands(message)
@@ -171,11 +177,11 @@ async def check_demotion_loop():
     global demoted_users
     now_utc = datetime.now(timezone.utc)
     
-    # Trigger at 6:00 PM UTC
+    # We check if we are within the first minute of the 6 PM hour
     if now_utc.hour == 18 and now_utc.minute == 0:
-        # For demotion, we check the period that just ended
-        deadline_utc = now_utc.replace(hour=18, minute=0, second=0, microsecond=0)
-        last_reset = deadline_utc - timedelta(days=1)
+        # The period that just ended is from 6 PM yesterday to 6 PM today
+        period_end = now_utc.replace(second=0, microsecond=0)
+        period_start = period_end - timedelta(days=1)
         
         track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
         if not track_channel:
@@ -183,48 +189,55 @@ async def check_demotion_loop():
             except: return
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
-        async for msg in track_channel.history(limit=500, after=last_reset):
-            content = msg.content
-            if not content and msg.embeds:
+        async for msg in track_channel.history(limit=1000, after=period_start, before=period_end):
+            content = ""
+            if msg.content: content += msg.content
+            if msg.embeds:
                 for embed in msg.embeds:
-                    if embed.description: content += embed.description
+                    if embed.description: content += f" {embed.description}"
                     if embed.author and embed.author.name: content += f" {embed.author.name}"
                     if embed.title: content += f" {embed.title}"
 
             for uid, name in USER_MAPPING.items():
-                if uid not in SPECIAL_QUOTA:
-                    pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
-                    if re.search(pattern, content, re.IGNORECASE):
-                        current_counts[uid] += 1
-                    elif msg.author.bot and name.lower() in content.lower():
-                        if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
-                            if not re.search(pattern, content, re.IGNORECASE):
-                                current_counts[uid] += 1
+                pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
+                if re.search(pattern, content, re.IGNORECASE):
+                    current_counts[uid] += 1
+                elif msg.author.bot and name.lower() in content.lower():
+                    if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
+                        if not re.search(pattern, content, re.IGNORECASE):
+                            current_counts[uid] += 1
         
+        # Handle special multi-day quotas
         for uid, quota in SPECIAL_QUOTA.items():
             if quota["days"] > 1:
-                window_start = deadline_utc - timedelta(days=quota["days"])
+                window_start = period_end - timedelta(days=quota["days"])
                 name = USER_MAPPING.get(uid)
-                async for msg in track_channel.history(limit=500, after=window_start):
-                    content = msg.content
-                    if not content and msg.embeds:
+                count = 0
+                async for msg in track_channel.history(limit=1000, after=window_start, before=period_end):
+                    content = ""
+                    if msg.content: content += msg.content
+                    if msg.embeds:
                         for embed in msg.embeds:
-                            if embed.description: content += embed.description
+                            if embed.description: content += f" {embed.description}"
                             if embed.author and embed.author.name: content += f" {embed.author.name}"
                             if embed.title: content += f" {embed.title}"
                     
                     pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
                     if re.search(pattern, content, re.IGNORECASE):
-                        current_counts[uid] += 1
+                        count += 1
                     elif msg.author.bot and name.lower() in content.lower():
-                        if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                        if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                             if not re.search(pattern, content, re.IGNORECASE):
-                                current_counts[uid] += 1
+                                count += 1
+                current_counts[uid] = count
 
         guild = track_channel.guild
         for uid, count in current_counts.items():
             quota = SPECIAL_QUOTA.get(uid, {"count": 3})
             required = quota["count"]
+            
+            # If they met their quota, they shouldn't be in demoted_users anymore (if they were)
+            # However, demotion logic is only for active members.
             if count < required:
                 member = guild.get_member(uid)
                 if not member:
@@ -233,18 +246,24 @@ async def check_demotion_loop():
                 
                 roles_to_remove = [r.id for r in member.roles if r.id in MANAGED_ROLES]
                 if roles_to_remove:
-                    roles_objects = [guild.get_role(rid) for rid in roles_to_remove]
-                    await member.remove_roles(*roles_objects)
-                    
-                    demoted_users[str(uid)] = {
-                        "roles": roles_to_remove,
-                        "missing": required - count
-                    }
-                    save_demoted_data(demoted_users)
-                    
-                    log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
-                    if log_channel:
-                        await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
+                    roles_objects = [guild.get_role(rid) for rid in roles_to_remove if guild.get_role(rid)]
+                    if roles_objects:
+                        await member.remove_roles(*roles_objects)
+                        
+                        demoted_users[str(uid)] = {
+                            "roles": roles_to_remove,
+                            "missing": required - count
+                        }
+                        save_demoted_data(demoted_users)
+                        
+                        log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+                        if log_channel:
+                            await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
+            else:
+                # If they met the quota but were demoted, restore roles (though restoration loop handles this, let's be safe)
+                if str(uid) in demoted_users:
+                    # Logic here would be redundant with check_user_restoration but good for deadline sync
+                    pass
 
 @tasks.loop(minutes=5)
 async def track_restoration_loop():
@@ -268,7 +287,7 @@ async def reminder_loop():
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
 
-    last_reset = deadline_utc - timedelta(days=1)
+    period_start = deadline_utc - timedelta(days=1)
     
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
@@ -276,11 +295,12 @@ async def reminder_loop():
         except: return
 
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    async for msg in track_channel.history(limit=200, after=last_reset):
-        content = msg.content
-        if not content and msg.embeds:
+    async for msg in track_channel.history(limit=500, after=period_start, before=now_utc):
+        content = ""
+        if msg.content: content += msg.content
+        if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += embed.description
+                if embed.description: content += f" {embed.description}"
                 if embed.author and embed.author.name: content += f" {embed.author.name}"
                 if embed.title: content += f" {embed.title}"
 
@@ -289,7 +309,7 @@ async def reminder_loop():
             if re.search(pattern, content, re.IGNORECASE):
                 current_counts[uid] += 1
             elif msg.author.bot and name.lower() in content.lower():
-                if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower() or "youtube.com" in content.lower():
+                if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                      if not re.search(pattern, content, re.IGNORECASE):
                          current_counts[uid] += 1
 
@@ -306,11 +326,12 @@ async def reminder_loop():
         if days_window > 1:
             window_start = deadline_utc - timedelta(days=days_window)
             count = 0
-            async for msg in track_channel.history(limit=500, after=window_start):
-                content = msg.content
-                if not content and msg.embeds:
+            async for msg in track_channel.history(limit=500, after=window_start, before=now_utc):
+                content = ""
+                if msg.content: content += msg.content
+                if msg.embeds:
                     for embed in msg.embeds:
-                        if embed.description: content += embed.description
+                        if embed.description: content += f" {embed.description}"
                         if embed.author and embed.author.name: content += f" {embed.author.name}"
                         if embed.title: content += f" {embed.title}"
                 
@@ -318,7 +339,7 @@ async def reminder_loop():
                 if re.search(pattern, content, re.IGNORECASE):
                     count += 1
                 elif msg.author.bot and name.lower() in content.lower():
-                    if "posted" in content.lower() or "new video" in content.lower() or "youtu.be" in content.lower():
+                    if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                         if not re.search(pattern, content, re.IGNORECASE):
                             count += 1
 
@@ -368,7 +389,6 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        # Use the requested hardcoded timestamp for the deadline message
         msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
