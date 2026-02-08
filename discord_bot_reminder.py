@@ -25,6 +25,7 @@ VIDEO_TRACK_CHANNEL_ID = 1469432714896740474
 
 MANAGED_ROLES = [
     1417986455296278538, 
+    1417959557719557719, 
     1417959557719654550, 
     1417968485031608443, 
     1427466045324787742, 
@@ -101,8 +102,8 @@ async def check_user_restoration(uid_str):
     data = demoted_users[uid_str]
     
     new_count = 0
-    async for msg in track_channel.history(limit=200, after=last_reset):
-        content = msg.content
+    async for msg in track_channel.history(limit=500, after=last_reset):
+        content = msg.content or ""
         if not content and msg.embeds:
             for embed in msg.embeds:
                 if embed.description: content += embed.description
@@ -125,11 +126,11 @@ async def check_user_restoration(uid_str):
         
         roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
         if roles_to_add:
-            await member.add_roles(*roles_to_add)
+            await member.add_roles(*[r for r in roles_to_add if r])
             
         log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today!")
+            await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today's daily quota!")
         
         del demoted_users[uid_str]
         save_demoted_data(demoted_users)
@@ -171,17 +172,19 @@ async def check_demotion_loop():
     global demoted_users
     now_utc = datetime.now(timezone.utc)
     
+    # Run at 23:00 UTC (Deadline)
     if now_utc.hour == 23 and now_utc.minute == 0:
         deadline_utc = get_next_deadline()
         last_reset = deadline_utc - timedelta(days=1)
         
         track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
         if not track_channel:
-            track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+            try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+            except: return
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
         async for msg in track_channel.history(limit=500, after=last_reset):
-            content = msg.content
+            content = msg.content or ""
             if not content and msg.embeds:
                 for embed in msg.embeds:
                     if embed.description: content += embed.description
@@ -203,7 +206,7 @@ async def check_demotion_loop():
                 window_start = deadline_utc - timedelta(days=quota["days"])
                 name = USER_MAPPING.get(uid)
                 async for msg in track_channel.history(limit=500, after=window_start):
-                    content = msg.content
+                    content = msg.content or ""
                     if not content and msg.embeds:
                         for embed in msg.embeds:
                             if embed.description: content += embed.description
@@ -219,6 +222,8 @@ async def check_demotion_loop():
                                 current_counts[uid] += 1
 
         guild = track_channel.guild
+        log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+        
         for uid, count in current_counts.items():
             quota = SPECIAL_QUOTA.get(uid, {"count": 3})
             required = quota["count"]
@@ -230,16 +235,16 @@ async def check_demotion_loop():
                 
                 roles_to_remove = [r.id for r in member.roles if r.id in MANAGED_ROLES]
                 if roles_to_remove:
-                    roles_objects = [guild.get_role(rid) for rid in roles_to_remove]
+                    roles_objects = [guild.get_role(rid) for rid in roles_to_remove if guild.get_role(rid)]
                     await member.remove_roles(*roles_objects)
                     
+                    # Store data for restoration
                     demoted_users[str(uid)] = {
                         "roles": roles_to_remove,
                         "missing": required - count
                     }
                     save_demoted_data(demoted_users)
                     
-                    log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
                     if log_channel:
                         await log_channel.send(f"⚠️ <@{uid}> has been demoted for missing {required-count} videos today.")
 
@@ -273,8 +278,8 @@ async def reminder_loop():
         except: return
 
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    async for msg in track_channel.history(limit=200, after=last_reset):
-        content = msg.content
+    async for msg in track_channel.history(limit=500, after=last_reset):
+        content = msg.content or ""
         if not content and msg.embeds:
             for embed in msg.embeds:
                 if embed.description: content += embed.description
@@ -292,6 +297,7 @@ async def reminder_loop():
 
     mentions_list = []
     completed_list = []
+    
     for uid, name in USER_MAPPING.items():
         uid_str = str(uid)
         count = current_counts[uid]
@@ -300,11 +306,12 @@ async def reminder_loop():
         required_count = quota_data["count"]
         days_window = quota_data["days"]
         
+        # Calculate window count if special quota
         if days_window > 1:
             window_start = deadline_utc - timedelta(days=days_window)
             count = 0
             async for msg in track_channel.history(limit=500, after=window_start):
-                content = msg.content
+                content = msg.content or ""
                 if not content and msg.embeds:
                     for embed in msg.embeds:
                         if embed.description: content += embed.description
@@ -320,66 +327,56 @@ async def reminder_loop():
                             count += 1
 
         if uid_str in demoted_users:
-            missing_from_yesterday = demoted_users[uid_str]["missing"]
-            if count < missing_from_yesterday:
-                needed = missing_from_yesterday - count
-                mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts (to get roles back)")
+            # User is demoted, they need to restore first
+            missing_to_restore = demoted_users[uid_str]["missing"]
+            if count < missing_to_restore:
+                rem_restoration = missing_to_restore - count
+                mentions_list.append(f"<@{uid}> ({name}) needs **{rem_restoration}** more shorts for the roles back and 3 more shorts for the daily limit")
             else:
-                today_count = count - missing_from_yesterday
-                if today_count < required_count:
-                    needed = required_count - today_count
-                    if days_window > 1:
-                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
-                    else:
-                        mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
+                # Restoration count met, but loop might not have run yet
+                daily_missing = 3 - count if uid not in SPECIAL_QUOTA else 0
+                if daily_missing > 0:
+                    mentions_list.append(f"<@{uid}> ({name}) needs **{daily_missing}** more shorts for today's quota")
                 else:
-                    if days_window > 1:
-                        completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
-                    else:
-                        completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
+                    completed_list.append(f"✅ **{name}** uploaded his required videos! He's good.")
         else:
+            # Regular user tracking
             if count < required_count:
-                needed = required_count - count
-                if days_window > 1:
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more high quality video in {days_window} days or else he loses his roles")
-                else:
-                    mentions_list.append(f"<@{uid}> ({name}) needs **{needed}** more shorts or else he loses his roles till he uploads the required amount")
+                mentions_list.append(f"<@{uid}> ({name}) needs **{required_count - count}** more shorts or else he loses his roles till he uploads the required amount")
             else:
                 if days_window > 1:
                     completed_list.append(f"✅ **{name}** uploaded his {required_count} High quality video in {days_window} days! He's good.")
                 else:
                     completed_list.append(f"✅ **{name}** uploaded his {required_count} shorts for today! He's good.")
 
-    if not mentions_list and not completed_list:
-        return
-
-    mentions_str = "\n".join(mentions_list)
-    completed_str = "\n".join(completed_list)
-    time_str = f"**{hours}h {minutes}m**" if hours > 0 else f"**{minutes}m**"
-    
     msg_parts = []
     if mentions_list:
-        msg_parts.append(f"🔔 **Upload the video!**\n{mentions_str}")
+        msg_parts.append("🔔 **Upload the video!**")
+        msg_parts.extend(mentions_list)
+        msg_parts.append("")
     
     if completed_list:
-        msg_parts.append(f"\n{completed_str}")
-    
-    if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
-    else:
-        msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
+        msg_parts.extend(completed_list)
+        msg_parts.append("")
 
+    deadline_ts = int(deadline_utc.timestamp())
+    msg_parts.append(f"You have **{hours}h {minutes}m** left till deadline (<t:{deadline_ts}:t>).")
+    
     await channel.send("\n".join(msg_parts))
 
 @bot.event
 async def on_ready():
-    print(f'Bot is logged in as {bot.user}')
-    interval = config.get("reminder_interval", 60)
-    reminder_loop.change_interval(minutes=interval)
-    if not reminder_loop.is_running(): reminder_loop.start()
-    if not check_demotion_loop.is_running(): check_demotion_loop.start()
-    if not track_restoration_loop.is_running(): track_restoration_loop.start()
+    print(f"Logged in as {bot.user}")
+    if not check_demotion_loop.is_running():
+        check_demotion_loop.start()
+    if not track_restoration_loop.is_running():
+        track_restoration_loop.start()
+    if not reminder_loop.is_running():
+        reminder_loop.start()
 
-token = os.environ.get('DISCORD_BOT_TOKEN')
-if token: bot.run(token)
-else: print("Token not set.")
+if __name__ == "__main__":
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("DISCORD_TOKEN not found in environment variables.")
