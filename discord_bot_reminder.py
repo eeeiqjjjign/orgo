@@ -192,7 +192,7 @@ async def check_demotion_loop():
             except: return
             
         current_counts = {uid: 0 for uid in USER_MAPPING}
-        async for msg in track_channel.history(limit=1000, after=period_start, before=period_end):
+        async for msg in track_channel.history(limit=2000, after=period_start, before=period_end):
             content = ""
             if msg.content: content += msg.content
             if msg.embeds:
@@ -210,13 +210,12 @@ async def check_demotion_loop():
                         if not re.search(pattern, content, re.IGNORECASE):
                             current_counts[uid] += 1
         
-        # Handle special multi-day quotas
         for uid, quota in SPECIAL_QUOTA.items():
             if quota["days"] > 1:
                 window_start = period_end - timedelta(days=quota["days"])
                 name = USER_MAPPING.get(uid)
                 count = 0
-                async for msg in track_channel.history(limit=1000, after=window_start, before=period_end):
+                async for msg in track_channel.history(limit=2000, after=window_start, before=period_end):
                     content = ""
                     if msg.content: content += msg.content
                     if msg.embeds:
@@ -293,7 +292,7 @@ async def reminder_loop():
         except: return
 
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    async for msg in track_channel.history(limit=500, after=period_start, before=now_utc):
+    async for msg in track_channel.history(limit=2000, after=period_start, before=now_utc):
         content = ""
         if msg.content: content += msg.content
         if msg.embeds:
@@ -324,7 +323,7 @@ async def reminder_loop():
         if days_window > 1:
             window_start = deadline_utc - timedelta(days=days_window)
             count = 0
-            async for msg in track_channel.history(limit=500, after=window_start, before=now_utc):
+            async for msg in track_channel.history(limit=2000, after=window_start, before=now_utc):
                 content = ""
                 if msg.content: content += msg.content
                 if msg.embeds:
@@ -387,7 +386,7 @@ async def reminder_loop():
         msg_parts.append(f"\n{completed_str}")
     
     if mentions_list:
-        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:1769900400:t>).")
+        msg_parts.append(f"\nYou have {time_str} left till deadline (<t:{int(deadline_utc.timestamp())}:t>).")
     else:
         msg_parts.append("\nEveryone has finished their uploads! Great job! 🎉")
 
