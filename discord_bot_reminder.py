@@ -21,7 +21,8 @@ bot = commands.Bot(command_prefix='.', intents=intents)
 
 REMINDER_CHANNEL_ID = 1468407822860423273
 VIDEO_TRACK_CHANNEL_ID = 1469432714896740474
-BOT_LOG_CHANNEL_ID = 1470532226209812539  # NEW logic -- send debug and demote logs here!
+BOT_LOG_CHANNEL_ID = 1470532226209812539
+DEMOTE_GUILD_ID = 1347804635989016617  # multi-server logic: this is your demotion/main server
 
 MANAGED_ROLES = [
     1417986455296278538, 
@@ -127,7 +128,11 @@ async def check_user_restoration(uid_str):
             return
     deadline_utc = get_next_deadline()
     last_reset = deadline_utc - timedelta(days=1)
-    guild = track_channel.guild
+    # Multi-server: get member from the demotion guild!
+    guild = bot.get_guild(DEMOTE_GUILD_ID)
+    if not guild:
+        await send_bot_log(f"FAILED TO FIND DEMOTION SERVER (Guild ID: {DEMOTE_GUILD_ID}) in restoration!")
+        return
     data = demoted_users[uid_str]
     new_count = 0
     async for msg in track_channel.history(limit=1000, after=last_reset):
@@ -155,8 +160,8 @@ async def check_user_restoration(uid_str):
         if not member:
             try:
                 member = await guild.fetch_member(uid)
-            except:
-                await send_bot_log(f"Could not fetch member {uid} (restoration).")
+            except Exception as e:
+                await send_bot_log(f"Could not fetch member {uid} (restoration) in demote guild. Error: {e}")
                 return
         roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
         if roles_to_add:
@@ -221,6 +226,13 @@ async def run_demotion_check():
         except Exception as e:
             await send_bot_log(f"FAILED TO FIND TRACK CHANNEL: {VIDEO_TRACK_CHANNEL_ID} | {e}")
             return
+
+    # Multi-server logic: get member from the demotion guild!
+    guild = bot.get_guild(DEMOTE_GUILD_ID)
+    if not guild:
+        await send_bot_log(f"FAILED TO FIND DEMOTION SERVER (Guild ID: {DEMOTE_GUILD_ID})!")
+        return
+
     current_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=2000, after=period_start, before=period_end):
         content = ""
@@ -242,7 +254,7 @@ async def run_demotion_check():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                     if not re.search(pattern, content, re.IGNORECASE):
                         current_counts[uid] += 1
-    guild = track_channel.guild
+
     demotion_details = []
     for uid, count in current_counts.items():
         quota = SPECIAL_QUOTA.get(uid, {"count": 3})
@@ -257,23 +269,32 @@ async def run_demotion_check():
                 try:
                     member = await guild.fetch_member(uid)
                 except Exception as e:
-                    await send_bot_log(f"Failed to fetch member: {e}")
+                    await send_bot_log(
+                        f"Could not fetch member {uid} ({DISCORD_USERNAMES.get(uid,'?')}) in demotion server. Error: {e}"
+                    )
                     continue
+            roles_before = [role.id for role in member.roles]
             managed_roles = [role for role in member.roles if role.id in MANAGED_ROLES]
             managed_roles_ids = [role.id for role in managed_roles]
-            await send_bot_log(f"{uid} managed_roles to remove: {managed_roles_ids}")
+            await send_bot_log(
+                f"{uid} ({DISCORD_USERNAMES.get(uid,'?')}): Current roles: {roles_before} | Managed roles to remove: {managed_roles_ids} (server: {DEMOTE_GUILD_ID})"
+            )
             if not managed_roles:
-                await send_bot_log(f"{uid} has no managed roles to remove!")
+                await send_bot_log(f"{uid} ({DISCORD_USERNAMES.get(uid,'?')}) has no managed roles to remove!")
                 continue
             try:
                 await member.remove_roles(*managed_roles, reason="Did not meet quota")
+                roles_after = [role.id for role in member.roles if role.id not in managed_roles_ids]
                 demoted_users[str(uid)] = {
                     "roles": managed_roles_ids,
                     "missing": required - count
                 }
                 save_demoted_data(demoted_users)
                 demotion_details.append(f"<@{uid}>: {count}/{required} videos")
-                await send_bot_log(f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles {managed_roles_ids} for missing quota ({count}/{required})")
+                await send_bot_log(
+                    f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles: {managed_roles_ids} | "
+                    f"Roles before: {roles_before} | Roles after demotion: {roles_after} | Missing: {required - count} (server: {DEMOTE_GUILD_ID})"
+                )
             except Exception as e:
                 await send_bot_log(f"Failed to demote user {uid}: {e}")
     log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
