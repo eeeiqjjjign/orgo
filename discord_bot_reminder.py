@@ -21,6 +21,7 @@ bot = commands.Bot(command_prefix='.', intents=intents)
 
 REMINDER_CHANNEL_ID = 1468407822860423273
 VIDEO_TRACK_CHANNEL_ID = 1469432714896740474
+BOT_LOG_CHANNEL_ID = 1470532226209812539  # NEW logic -- send debug and demote logs here!
 
 MANAGED_ROLES = [
     1417986455296278538, 
@@ -32,11 +33,11 @@ MANAGED_ROLES = [
 ]
 
 USER_MAPPING = {
-    1086571236160708709: "FunwithBg",          # life4x
-    1157663612115107981: "Snipzy-AZ",          # .snipzy_ (discord), "Snipzy-AZ" (YouTube string)
-    1444845857701630094: "Jay",                # jiyansu
-    1458104862834167824: "Raccoon",            # zeki4life
-    1210942252264857673: "RINGTA EMPIRE"       # vsxwexe
+    1086571236160708709: "FunwithBg",
+    1157663612115107981: "Snipzy-AZ",
+    1444845857701630094: "Jay",
+    1458104862834167824: "Raccoon",
+    1210942252264857673: "RINGTA EMPIRE"
 }
 DISCORD_USERNAMES = {
     1086571236160708709: "life4x",
@@ -93,21 +94,36 @@ def get_next_deadline():
         deadline_est += timedelta(days=1)
     return deadline_est.astimezone(timezone.utc)
 
+async def send_bot_log(msg):
+    print(f"[BOT LOG] {msg}")
+    log_channel = bot.get_channel(BOT_LOG_CHANNEL_ID)
+    if not log_channel:
+        try:
+            log_channel = await bot.fetch_channel(BOT_LOG_CHANNEL_ID)
+        except Exception as e:
+            print(f"[BOTLOG-ERROR] Could not fetch BOT LOG channel: {e}")
+            return
+    try:
+        await log_channel.send(str(msg))
+    except Exception as e:
+        print(f"[BOTLOG-ERROR] Could not send log to Discord: {e}")
+
 async def check_user_restoration(uid_str):
     global demoted_users
     if uid_str not in demoted_users:
-        print(f"[DEBUG] User {uid_str} not in demoted_users, skipping restoration.")
+        await send_bot_log(f"User {uid_str} not in demoted_users, skipping restoration.")
         return
     uid = int(uid_str)
     name = USER_MAPPING.get(uid)
-    if not name: 
-        print(f"[DEBUG] No name in USER_MAPPING for UID {uid}, skipping restoration.")
+    if not name:
+        await send_bot_log(f"No name in USER_MAPPING for UID {uid}, skipping restoration.")
         return
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
-        try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
-        except: 
-            print(f"[DEBUG] Could not fetch track_channel {VIDEO_TRACK_CHANNEL_ID} (restoration).")
+        try:
+            track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+        except:
+            await send_bot_log(f"Could not fetch track_channel {VIDEO_TRACK_CHANNEL_ID} (restoration).")
             return
     deadline_utc = get_next_deadline()
     last_reset = deadline_utc - timedelta(days=1)
@@ -116,12 +132,16 @@ async def check_user_restoration(uid_str):
     new_count = 0
     async for msg in track_channel.history(limit=1000, after=last_reset):
         content = ""
-        if msg.content: content += msg.content
+        if msg.content:
+            content += msg.content
         if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += f" {embed.description}"
-                if embed.author and embed.author.name: content += f" {embed.author.name}"
-                if embed.title: content += f" {embed.title}"
+                if embed.description:
+                    content += f" {embed.description}"
+                if embed.author and embed.author.name:
+                    content += f" {embed.author.name}"
+                if embed.title:
+                    content += f" {embed.title}"
         pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
         if re.search(pattern, content, re.IGNORECASE):
             new_count += 1
@@ -129,13 +149,14 @@ async def check_user_restoration(uid_str):
             if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                 if not re.search(pattern, content, re.IGNORECASE):
                     new_count += 1
-    print(f"[DEBUG] Restoration check for {uid}: found {new_count} new (needed {data['missing']}).")
+    await send_bot_log(f"Restoration check for {uid}: found {new_count} new (needed {data['missing']}).")
     if new_count >= data["missing"]:
         member = guild.get_member(uid)
         if not member:
-            try: member = await guild.fetch_member(uid)
-            except: 
-                print(f"[DEBUG] Could not fetch member {uid} (restoration).")
+            try:
+                member = await guild.fetch_member(uid)
+            except:
+                await send_bot_log(f"Could not fetch member {uid} (restoration).")
                 return
         roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
         if roles_to_add:
@@ -145,6 +166,7 @@ async def check_user_restoration(uid_str):
             await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today!")
         del demoted_users[uid_str]
         save_demoted_data(demoted_users)
+        await send_bot_log(f"Roles restored for <@{uid}> after uploading missing videos.")
 
 @bot.command(name='set_interval')
 @commands.check(is_owner)
@@ -174,7 +196,8 @@ async def on_message(message):
                 content = message.content or ""
                 if message.embeds:
                     for embed in message.embeds:
-                        if embed.description: content += f" {embed.description}"
+                        if embed.description:
+                            content += f" {embed.description}"
                 if re.search(pattern, content, re.IGNORECASE):
                     await check_user_restoration(uid_str)
     await bot.process_commands(message)
@@ -189,22 +212,28 @@ async def run_demotion_check():
     period_start_est = period_end_est - timedelta(days=1)
     period_start = period_start_est.astimezone(timezone.utc)
     period_end = period_end_est.astimezone(timezone.utc)
-    logging.info(f"DEMOTION CHECK (YESTERDAY): from={period_start} to={period_end}")
+    await send_bot_log(f"DEMOTION CHECK (YESTERDAY): from={period_start} to={period_end}")
+
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
-        try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
-        except: 
-            logging.error(f"FAILED TO FIND TRACK CHANNEL: {VIDEO_TRACK_CHANNEL_ID}")
+        try:
+            track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+        except Exception as e:
+            await send_bot_log(f"FAILED TO FIND TRACK CHANNEL: {VIDEO_TRACK_CHANNEL_ID} | {e}")
             return
     current_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=2000, after=period_start, before=period_end):
         content = ""
-        if msg.content: content += msg.content
+        if msg.content:
+            content += msg.content
         if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += f" {embed.description}"
-                if embed.author and embed.author.name: content += f" {embed.author.name}"
-                if embed.title: content += f" {embed.title}"
+                if embed.description:
+                    content += f" {embed.description}"
+                if embed.author and embed.author.name:
+                    content += f" {embed.author.name}"
+                if embed.title:
+                    content += f" {embed.title}"
         for uid, name in USER_MAPPING.items():
             pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
             if re.search(pattern, content, re.IGNORECASE):
@@ -216,48 +245,43 @@ async def run_demotion_check():
     guild = track_channel.guild
     demotion_details = []
     for uid, count in current_counts.items():
-        print(f"[DEBUG] Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {SPECIAL_QUOTA.get(uid, {'count': 3})['count']}")
-        if str(uid) in demoted_users:
-            print(f"[DEBUG] Already demoted: {uid}")
-            continue
         quota = SPECIAL_QUOTA.get(uid, {"count": 3})
         required = quota["count"]
+        await send_bot_log(f"Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {required}")
+        if str(uid) in demoted_users:
+            await send_bot_log(f"Already demoted: {uid}")
+            continue
         if count < required:
             member = guild.get_member(uid)
-            print(f"[DEBUG] member for uid {uid}: {member}")
             if not member:
-                try: 
+                try:
                     member = await guild.fetch_member(uid)
-                    print(f"[DEBUG] fetched member: {member}")
                 except Exception as e:
-                    print(f"[DEBUG] Failed to fetch member: {e}")
+                    await send_bot_log(f"Failed to fetch member: {e}")
                     continue
-            member_role_ids = [r.id for r in member.roles]
-            print(f"[DEBUG] {uid} ({DISCORD_USERNAMES.get(uid,'?')}): member_role_ids: {member_role_ids}")
-            roles_to_remove = [r.id for r in member.roles if r.id in MANAGED_ROLES]
-            print(f"[DEBUG] {uid}: roles_to_remove: {roles_to_remove} | MANAGED_ROLES: {MANAGED_ROLES}")
-            if not roles_to_remove:
-                print(f"[DEBUG] {uid} has no managed roles to remove!")
-            if roles_to_remove:
-                roles_objects = [guild.get_role(rid) for rid in roles_to_remove if guild.get_role(rid)]
-                if roles_objects:
-                    try:
-                        print(f"[DEBUG] Removing roles {roles_to_remove} from user {uid}")
-                        await member.remove_roles(*roles_objects)
-                        demoted_users[str(uid)] = {
-                            "roles": roles_to_remove,
-                            "missing": required - count
-                        }
-                        save_demoted_data(demoted_users)
-                        demotion_details.append(f"<@{uid}>: {count}/{required} videos")
-                    except Exception as e:
-                        print(f"[DEBUG] Failed to demote user {uid}: {e}")
+            managed_roles = [role for role in member.roles if role.id in MANAGED_ROLES]
+            managed_roles_ids = [role.id for role in managed_roles]
+            await send_bot_log(f"{uid} managed_roles to remove: {managed_roles_ids}")
+            if not managed_roles:
+                await send_bot_log(f"{uid} has no managed roles to remove!")
+                continue
+            try:
+                await member.remove_roles(*managed_roles, reason="Did not meet quota")
+                demoted_users[str(uid)] = {
+                    "roles": managed_roles_ids,
+                    "missing": required - count
+                }
+                save_demoted_data(demoted_users)
+                demotion_details.append(f"<@{uid}>: {count}/{required} videos")
+                await send_bot_log(f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles {managed_roles_ids} for missing quota ({count}/{required})")
+            except Exception as e:
+                await send_bot_log(f"Failed to demote user {uid}: {e}")
     log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
     if demotion_details and log_channel:
-        print(f"[DEBUG] Demoted users: {demotion_details}")
         msg = "**YESTERDAY videos posted:**\n" + "\n".join(demotion_details)
         msg += "\n\n⚠️ These users have been demoted. Upload your missing videos to get your roles back!"
         await log_channel.send(msg)
+        await send_bot_log(f"Demotion log posted to reminder channel.")
 
 @tasks.loop(minutes=1)
 async def check_demotion_loop():
@@ -283,8 +307,10 @@ async def track_restoration_loop():
 async def reminder_loop():
     channel = bot.get_channel(REMINDER_CHANNEL_ID)
     if not channel:
-        try: channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
-        except: return
+        try:
+            channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
+        except:
+            return
     est_offset = timezone(timedelta(hours=-5))
     now_est = datetime.now(est_offset)
     today_str = now_est.strftime("%Y-%m-%d")
@@ -302,25 +328,31 @@ async def reminder_loop():
     period_start = deadline_utc - timedelta(days=1)
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
-        try: track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
-        except: return
+        try:
+            track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
+        except:
+            return
     current_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=2000, after=period_start, before=now_utc):
         content = ""
-        if msg.content: content += msg.content
+        if msg.content:
+            content += msg.content
         if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += f" {embed.description}"
-                if embed.author and embed.author.name: content += f" {embed.author.name}"
-                if embed.title: content += f" {embed.title}"
+                if embed.description:
+                    content += f" {embed.description}"
+                if embed.author and embed.author.name:
+                    content += f" {embed.author.name}"
+                if embed.title:
+                    content += f" {embed.title}"
         for uid, name in USER_MAPPING.items():
             pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
             if re.search(pattern, content, re.IGNORECASE):
                 current_counts[uid] += 1
             elif msg.author.bot and name.lower() in content.lower():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
-                     if not re.search(pattern, content, re.IGNORECASE):
-                         current_counts[uid] += 1
+                    if not re.search(pattern, content, re.IGNORECASE):
+                        current_counts[uid] += 1
     yesterday_end_est = now_est.replace(hour=18, minute=0, second=0, microsecond=0)
     if now_est < yesterday_end_est:
         yesterday_end_est -= timedelta(days=1)
@@ -330,12 +362,16 @@ async def reminder_loop():
     yesterday_counts = {uid: 0 for uid in USER_MAPPING}
     async for msg in track_channel.history(limit=2000, after=yesterday_start, before=yesterday_end):
         content = ""
-        if msg.content: content += msg.content
+        if msg.content:
+            content += msg.content
         if msg.embeds:
             for embed in msg.embeds:
-                if embed.description: content += f" {embed.description}"
-                if embed.author and embed.author.name: content += f" {embed.author.name}"
-                if embed.title: content += f" {embed.title}"
+                if embed.description:
+                    content += f" {embed.description}"
+                if embed.author and embed.author.name:
+                    content += f" {embed.author.name}"
+                if embed.title:
+                    content += f" {embed.title}"
         for uid, name in USER_MAPPING.items():
             pattern = rf"{re.escape(name)}\s+just\s+posted\s+a\s+new\s+video!"
             if re.search(pattern, content, re.IGNORECASE):
@@ -355,7 +391,7 @@ async def reminder_loop():
         else:
             mentions_list.append(f"<@{uid}> ({count}/{required_count})")
     yesterday_summary = [
-        f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}" 
+        f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}"
         for uid in USER_MAPPING
     ]
     embed = discord.Embed(
