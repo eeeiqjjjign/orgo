@@ -112,6 +112,40 @@ async def send_bot_log(msg):
     except Exception as e:
         print(f"[BOTLOG-ERROR] Could not send log to Discord: {e}")
 
+async def recover_demoted_users_from_logs():
+    global demoted_users
+    # Only recover if the file is empty
+    if demoted_users:
+        return
+    log_channel = bot.get_channel(BOT_LOG_CHANNEL_ID)
+    if not log_channel:
+        try:
+            log_channel = await bot.fetch_channel(BOT_LOG_CHANNEL_ID)
+        except:
+            print("[BOTLOG-ERROR] Could not fetch recovery log channel")
+            return
+    temp_demoted = {}
+    async for msg in log_channel.history(limit=250):
+        text = msg.content
+        # DEMOTED <@id> (...) -- Removed roles: [list] ... | Missing: X (server: id)
+        m = re.search(r"DEMOTED\s+<@(\d+)>\s+\([^)]+\)\s+-- Removed roles: (\[[^\]]*\]).*Missing: (\d+)", text)
+        if m:
+            uid = m.group(1)
+            roles_str = m.group(2)
+            missing = int(m.group(3))
+            try:
+                roles = json.loads(roles_str.replace("'", ""))
+                temp_demoted[uid] = {
+                    "roles": roles,
+                    "missing": missing
+                }
+            except Exception as e:
+                print(f"Failed to parse demote line: {e}")
+    if temp_demoted:
+        demoted_users.update(temp_demoted)
+        save_demoted_data(demoted_users)
+        print(f"Recovered {len(temp_demoted)} demoted users from logs.")
+
 async def check_user_restoration(uid_str):
     global demoted_users
     if uid_str not in demoted_users:
@@ -267,12 +301,11 @@ async def run_demotion_check():
         missing_today = required - count
         await send_bot_log(f"Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {required}")
         if str(uid) in demoted_users:
-            # If user is already demoted, increment their missing videos by today's deficit
             demoted_users[str(uid)]["missing"] += max(0, missing_today)
             roles_to_show = demoted_users[str(uid)]["roles"]
             missing_videos = demoted_users[str(uid)]["missing"]
             demotion_details.append(
-                f"<@{uid}>: {count}/{required} videos — You need {missing_videos} more video{'s' if missing_videos != 1 else ''} to restore your roles! (Roles lost: {roles_to_show})"
+                f"<@{uid}>: {count}/{required} videos — You need {missing_videos} more videos to restore your roles! (Roles lost: {roles_to_show})"
             )
             await send_bot_log(f"Already demoted: {uid} (missing={missing_videos})")
             save_demoted_data(demoted_users)
@@ -305,7 +338,7 @@ async def run_demotion_check():
                 }
                 save_demoted_data(demoted_users)
                 demotion_details.append(
-                    f"<@{uid}>: {count}/{required} videos — You need {missing_today} more video{'s' if missing_today != 1 else ''} to restore your roles! (Roles lost: {managed_roles_ids})"
+                    f"<@{uid}>: {count}/{required} videos — You need {missing_today} more videos to restore your roles! (Roles lost: {managed_roles_ids})"
                 )
                 await send_bot_log(
                     f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles: {managed_roles_ids} | "
@@ -432,36 +465,33 @@ async def reminder_loop():
             if lost_roles:
                 lost_roles_str = ", ".join(str(r) for r in lost_roles)
                 mentions_list.append(
-                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} to restore your roles! (Roles lost: {lost_roles_str})"
+                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos to restore your roles! (Roles lost: {lost_roles_str})"
                 )
             else:
                 mentions_list.append(
-                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} today!"
+                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos today!"
                 )
     yesterday_summary = [
         f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}" 
         for uid in USER_MAPPING
     ]
-    embed = discord.Embed(
-        title="📹 Video Upload Reminder",
-        description=f"Time remaining until next deadline (<t:1769900400:t>): **{time_str}**\n\n"
-                    f"**Required:** 3 videos per day (unless specified otherwise).",
-        color=discord.Color.orange()
-    )
-    if mentions_list:
-        embed.add_field(name="⚠️ Need to Upload", value="\n".join(mentions_list), inline=False)
-    if completed_list:
-        embed.add_field(name="✅ Completed", value="\n".join(completed_list), inline=False)
-    embed.add_field(
-        name="📊 Yesterday's Uploads",
-        value="\n".join(yesterday_summary),
-        inline=False
-    )
-    await channel.send(embed=embed)
+    msg = ""
+    if mentions_list or completed_list:
+        # Plaintext (not embed): easier for copy-paste
+        msg += "**YESTERDAY videos posted:**\n"
+        msg += "\n".join(mentions_list)
+        msg += "\n"
+        msg += "\n".join(completed_list)
+        msg += "\n\n📊 Yesterday's Uploads\n"
+        msg += "\n".join(yesterday_summary)
+        msg += f"\n\nTime remaining until next deadline (6:00 PM): {time_str}"
+        msg += "\n\n⚠️ These users have been demoted. Upload your missing videos to get your roles back!"
+    await channel.send(msg)
 
 @bot.event
 async def on_ready():
     logging.info(f'Logged in as {bot.user.name}')
+    await recover_demoted_users_from_logs()
     if not check_demotion_loop.is_running():
         check_demotion_loop.start()
     if not track_restoration_loop.is_running():
