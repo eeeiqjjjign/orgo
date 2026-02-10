@@ -484,7 +484,7 @@ async def reminder_loop():
         msg += "\n".join(completed_list)
         msg += "\n\n📊 Yesterday's Uploads\n"
         msg += "\n".join(yesterday_summary)
-        msg += f"\n\nTime remaining until next deadline (6:00 PM): {time_str}"
+        msg += f"\n\nTime remaining until next deadline (<t:1769900400:t>): {time_str}"
         msg += "\n\n⚠️ These users have been demoted. Upload your missing videos to get your roles back!"
     await channel.send(msg)
 
