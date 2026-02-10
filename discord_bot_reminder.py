@@ -22,7 +22,7 @@ bot = commands.Bot(command_prefix='.', intents=intents)
 REMINDER_CHANNEL_ID = 1468407822860423273
 VIDEO_TRACK_CHANNEL_ID = 1469432714896740474
 BOT_LOG_CHANNEL_ID = 1470532226209812539
-DEMOTE_GUILD_ID = 1347804635989016617  # multi-server logic: this is your demotion/main server
+DEMOTE_GUILD_ID = 1347804635989016617
 
 MANAGED_ROLES = [
     1417986455296278538, 
@@ -31,7 +31,7 @@ MANAGED_ROLES = [
     1427466045324787742, 
     1418029602735128586, 
     1417970206990532730,
-    1417970527250677821    # <-- NEW role added
+    1417970527250677821
 ]
 
 USER_MAPPING = {
@@ -40,7 +40,7 @@ USER_MAPPING = {
     1444845857701630094: "Jay",
     1458104862834167824: "Raccoon",
     1210942252264857673: "RINGTA EMPIRE",
-    1423018852761079829: "yassin_L"         # <-- NEW user mapping (YouTube channel)
+    1423018852761079829: "yassin_L"
 }
 DISCORD_USERNAMES = {
     1086571236160708709: "life4x",
@@ -48,7 +48,7 @@ DISCORD_USERNAMES = {
     1444845857701630094: "jiyansu",
     1458104862834167824: "zeki4life",
     1210942252264857673: "vsxwexe",
-    1423018852761079829: "unknown057908"    # <-- NEW discord username
+    1423018852761079829: "unknown057908"
 }
 
 SPECIAL_QUOTA = {
@@ -130,8 +130,9 @@ async def check_user_restoration(uid_str):
             await send_bot_log(f"Could not fetch track_channel {VIDEO_TRACK_CHANNEL_ID} (restoration).")
             return
     deadline_utc = get_next_deadline()
-    last_reset = deadline_utc - timedelta(days=1)
-    # Multi-server: get member from the demotion guild!
+    # Look at all videos since they were demoted (for cumulative missing count)
+    days_missing = demoted_users[uid_str]["missing"]
+    last_reset = deadline_utc - timedelta(days=days_missing)
     guild = bot.get_guild(DEMOTE_GUILD_ID)
     if not guild:
         await send_bot_log(f"FAILED TO FIND DEMOTION SERVER (Guild ID: {DEMOTE_GUILD_ID}) in restoration!")
@@ -171,7 +172,9 @@ async def check_user_restoration(uid_str):
             await member.add_roles(*roles_to_add)
         log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"✅ <@{uid}> uploaded their missing videos! Roles restored. Note: You still need to upload 3 more for today!")
+            await log_channel.send(
+                f"✅ <@{uid}> uploaded enough missing videos! Roles restored. Note: You must upload your daily quota for tomorrow or you will be demoted again."
+            )
         del demoted_users[uid_str]
         save_demoted_data(demoted_users)
         await send_bot_log(f"Roles restored for <@{uid}> after uploading missing videos.")
@@ -230,7 +233,6 @@ async def run_demotion_check():
             await send_bot_log(f"FAILED TO FIND TRACK CHANNEL: {VIDEO_TRACK_CHANNEL_ID} | {e}")
             return
 
-    # Multi-server logic: get member from the demotion guild!
     guild = bot.get_guild(DEMOTE_GUILD_ID)
     if not guild:
         await send_bot_log(f"FAILED TO FIND DEMOTION SERVER (Guild ID: {DEMOTE_GUILD_ID})!")
@@ -262,11 +264,20 @@ async def run_demotion_check():
     for uid, count in current_counts.items():
         quota = SPECIAL_QUOTA.get(uid, {"count": 3})
         required = quota["count"]
+        missing_today = required - count
         await send_bot_log(f"Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {required}")
         if str(uid) in demoted_users:
-            await send_bot_log(f"Already demoted: {uid}")
+            # If user is already demoted, increment their missing videos by today's deficit
+            demoted_users[str(uid)]["missing"] += max(0, missing_today)
+            roles_to_show = demoted_users[str(uid)]["roles"]
+            missing_videos = demoted_users[str(uid)]["missing"]
+            demotion_details.append(
+                f"<@{uid}>: {count}/{required} videos — You need {missing_videos} more video{'s' if missing_videos != 1 else ''} to restore your roles! (Roles lost: {roles_to_show})"
+            )
+            await send_bot_log(f"Already demoted: {uid} (missing={missing_videos})")
+            save_demoted_data(demoted_users)
             continue
-        if count < required:
+        if missing_today > 0:
             member = guild.get_member(uid)
             if not member:
                 try:
@@ -290,19 +301,19 @@ async def run_demotion_check():
                 roles_after = [role.id for role in member.roles if role.id not in managed_roles_ids]
                 demoted_users[str(uid)] = {
                     "roles": managed_roles_ids,
-                    "missing": required - count
+                    "missing": missing_today
                 }
                 save_demoted_data(demoted_users)
-                missing_videos = required - count
                 demotion_details.append(
-                    f"<@{uid}>: {count}/{required} videos — You need {missing_videos} more video{'s' if missing_videos != 1 else ''} to restore your roles!"
+                    f"<@{uid}>: {count}/{required} videos — You need {missing_today} more video{'s' if missing_today != 1 else ''} to restore your roles! (Roles lost: {managed_roles_ids})"
                 )
                 await send_bot_log(
                     f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles: {managed_roles_ids} | "
-                    f"Roles before: {roles_before} | Roles after demotion: {roles_after} | Missing: {required - count} (server: {DEMOTE_GUILD_ID})"
+                    f"Roles before: {roles_before} | Roles after demotion: {roles_after} | Missing: {missing_today} (server: {DEMOTE_GUILD_ID})"
                 )
             except Exception as e:
                 await send_bot_log(f"Failed to demote user {uid}: {e}")
+
     log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
     if demotion_details and log_channel:
         msg = "**YESTERDAY videos posted:**\n" + "\n".join(demotion_details)
@@ -413,13 +424,20 @@ async def reminder_loop():
         count = current_counts[uid]
         quota_data = SPECIAL_QUOTA.get(uid, {"count": 3})
         required_count = quota_data["count"]
-        missing = max(0, required_count - count)
-        if count >= required_count:
+        missing = demoted_users.get(str(uid), {}).get("missing", max(0, required_count - count))
+        if count >= required_count and str(uid) not in demoted_users:
             completed_list.append(f"<@{uid}> ({count}/{required_count})")
         else:
-            mentions_list.append(
-                f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} today!"
-            )
+            lost_roles = demoted_users.get(str(uid), {}).get("roles", [])
+            if lost_roles:
+                lost_roles_str = ", ".join(str(r) for r in lost_roles)
+                mentions_list.append(
+                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} to restore your roles! (Roles lost: {lost_roles_str})"
+                )
+            else:
+                mentions_list.append(
+                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} today!"
+                )
     yesterday_summary = [
         f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}" 
         for uid in USER_MAPPING
