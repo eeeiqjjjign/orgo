@@ -161,7 +161,6 @@ async def check_user_restoration(uid_str):
             return
     deadline_utc = get_next_deadline()
     data = demoted_users[uid_str]
-    # Fix: Only check uploads since demoted_date to now
     demoted_date = dateutil.parser.parse(data.get('demoted_date', deadline_utc.isoformat()))
     new_count = 0
     async for msg in track_channel.history(limit=1000, after=demoted_date):
@@ -293,7 +292,8 @@ async def run_demotion_check():
         await send_bot_log(f"Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {required}")
         if str(uid) in demoted_users:
             demoted_users[str(uid)]["missing"] += max(0, missing_today)
-            demoted_users[str(uid)]["demoted_date"] = demoted_users[str(uid)].get("demoted_date", datetime.now(timezone.utc).isoformat())
+            if "demoted_date" not in demoted_users[str(uid)]:
+                demoted_users[str(uid)]["demoted_date"] = datetime.now(timezone.utc).isoformat()
             roles_to_show = demoted_users[str(uid)]["roles"]
             missing_videos = demoted_users[str(uid)]["missing"]
             demotion_details.append(
@@ -433,7 +433,7 @@ async def reminder_loop():
                 if embed.description:
                     content += f" {embed.description}"
                 if embed.author and embed.author.name:
-                    content += f" {embed.author name}"
+                    content += f" {embed.author.name}"
                 if embed.title:
                     content += f" {embed.title}"
         for uid, name in USER_MAPPING.items():
