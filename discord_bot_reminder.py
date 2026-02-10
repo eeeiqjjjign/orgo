@@ -103,7 +103,6 @@ def is_owner(ctx):
     return ctx.author.id == 608461552034643992
 
 def get_required_videos(uid):
-    # Check custom config else fallback to default 3
     return user_video_config.get(str(uid), {}).get("restore", 3)
 
 def get_daily_required_videos(uid):
@@ -156,7 +155,7 @@ async def recover_demoted_users_from_logs():
         save_demoted_data(demoted_users)
         print(f"Recovered {len(temp_demoted)} demoted users from logs.")
 
-async def check_user_restoration(uid_str):
+async def check_user_restoration(uid_str, force_restore=False):
     global demoted_users
     if uid_str not in demoted_users:
         await send_bot_log(f"User {uid_str} not in demoted_users, skipping restoration.")
@@ -166,6 +165,32 @@ async def check_user_restoration(uid_str):
     if not name:
         await send_bot_log(f"No name in USER_MAPPING for UID {uid}, skipping restoration.")
         return
+    # Get restore requirement
+    restore_req = user_video_config.get(uid_str, {}).get("restore", 3)
+    data = demoted_users[uid_str]
+    missing = data.get('missing', restore_req)
+    # Force restore if requirement is 0 or missing is 0 or forced via command
+    if restore_req == 0 or missing == 0 or force_restore:
+        guild = bot.get_guild(DEMOTE_GUILD_ID)
+        member = guild.get_member(uid)
+        if not member:
+            try:
+                member = await guild.fetch_member(uid)
+            except Exception as e:
+                await send_bot_log(f"Could not fetch member {uid} (restoration) in demote guild. Error: {e}")
+                return
+        roles_to_add = [guild.get_role(rid) for rid in data["roles"] if guild.get_role(rid)]
+        if roles_to_add:
+            await member.add_roles(*roles_to_add)
+        log_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(
+                f"✅ <@{uid}> roles have been restored automatically (requirement set to 0)."
+            )
+        del demoted_users[uid_str]
+        save_demoted_data(demoted_users)
+        await send_bot_log(f"Roles restored instantly for <@{uid}> (restore requirement set to 0).")
+        return  # Don't do further checks
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
         try:
@@ -173,8 +198,6 @@ async def check_user_restoration(uid_str):
         except:
             await send_bot_log(f"Could not fetch track_channel {VIDEO_TRACK_CHANNEL_ID} (restoration).")
             return
-    # Use demoted_date
-    data = demoted_users[uid_str]
     demoted_date = dateutil.parser.parse(data.get('demoted_date', datetime.now(timezone.utc).isoformat()))
     new_count = 0
     async for msg in track_channel.history(limit=1000, after=demoted_date):
@@ -246,6 +269,9 @@ async def set_video_restore(ctx, user_id: int, num: int):
     user_video_config[str(user_id)]["restore"] = num
     save_user_video_config(user_video_config)
     await ctx.send(f"✅ <@{user_id}> restore requirement set to {num} videos.")
+    # IMMEDIATE RESTORE if set to 0 for demoted user
+    if num == 0 and str(user_id) in demoted_users:
+        await check_user_restoration(str(user_id), force_restore=True)
 
 @set_video_restore.error
 async def set_video_restore_error(ctx, error):
@@ -339,6 +365,69 @@ async def remove_video_daily_error(ctx, error):
         await ctx.send("❌ Only the owner can use this command.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("❌ Usage: `.remove_video_daily <user_id> <amount>`")
+
+@bot.command(name="auto_restore")
+@commands.check(is_owner)
+async def auto_restore(ctx, user_id: int):
+    uid_str = str(user_id)
+    if uid_str in demoted_users:
+        await check_user_restoration(uid_str, force_restore=True)
+        await ctx.send(f"✅ Attempted immediate restoration for <@{user_id}>.")
+    else:
+        await ctx.send(f"❌ User <@{user_id}> is not currently demoted.")
+
+@auto_restore.error
+async def auto_restore_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("❌ Only the owner can use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Usage: `.auto_restore <user_id>`")
+
+@bot.command(name="force_demote")
+@commands.check(is_owner)
+async def force_demote(ctx, user_id: int, restore_amount: int):
+    """Force-demote a user and set their restore amount, regardless of status."""
+    if restore_amount < 0:
+        await ctx.send("❌ Restore amount must be >= 0.")
+        return
+    guild = bot.get_guild(DEMOTE_GUILD_ID)
+    member = guild.get_member(user_id)
+    if not member:
+        try:
+            member = await guild.fetch_member(user_id)
+        except Exception as e:
+            await ctx.send(f"❌ Failed to fetch member: {e}")
+            return
+    managed_roles = [role for role in member.roles if role.id in MANAGED_ROLES]
+    managed_roles_ids = [role.id for role in managed_roles]
+    if not managed_roles:
+        await ctx.send("❌ User has no managed roles to remove.")
+        return
+    try:
+        await member.remove_roles(*managed_roles, reason="Force demote command")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to remove roles: {e}")
+        return
+    user_video_config.setdefault(str(user_id), {})
+    user_video_config[str(user_id)]["restore"] = restore_amount
+    save_user_video_config(user_video_config)
+    demoted_users[str(user_id)] = {
+        "roles": managed_roles_ids,
+        "missing": restore_amount,
+        "demoted_date": datetime.now(timezone.utc).isoformat()
+    }
+    save_demoted_data(demoted_users)
+    await send_bot_log(f"FORCE DEMOTED <@{user_id}> -- Removed roles: {managed_roles_ids}, restore={restore_amount}")
+    await ctx.send(f"✅ <@{user_id}> has been force-demoted. They need {restore_amount} videos to restore roles.")
+    if restore_amount == 0:
+        await check_user_restoration(str(user_id), force_restore=True)
+
+@force_demote.error
+async def force_demote_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("❌ Only the owner can use this command.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Usage: `.force_demote <user_id> <restore_amount>`")
 
 @bot.event
 async def on_message(message):
@@ -507,9 +596,8 @@ async def reminder_loop():
             track_channel = await bot.fetch_channel(VIDEO_TRACK_CHANNEL_ID)
         except:
             return
+    # Count videos today
     current_counts = {uid: 0 for uid in USER_MAPPING}
-    for uid in USER_MAPPING:
-        current_counts[uid] = 0
     async for msg in track_channel.history(limit=2000, after=period_start, before=now_utc):
         content = ""
         if msg.content:
@@ -530,6 +618,7 @@ async def reminder_loop():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                     if not re.search(pattern, content, re.IGNORECASE):
                         current_counts[uid] += 1
+    # Count videos yesterday (EST day)
     yesterday_end_est = now_est.replace(hour=18, minute=0, second=0, microsecond=0)
     if now_est < yesterday_end_est:
         yesterday_end_est -= timedelta(days=1)
@@ -537,8 +626,6 @@ async def reminder_loop():
     yesterday_start = yesterday_start_est.astimezone(timezone.utc)
     yesterday_end = yesterday_end_est.astimezone(timezone.utc)
     yesterday_counts = {uid: 0 for uid in USER_MAPPING}
-    for uid in USER_MAPPING:
-        yesterday_counts[uid] = 0
     async for msg in track_channel.history(limit=2000, after=yesterday_start, before=yesterday_end):
         content = ""
         if msg.content:
@@ -559,40 +646,38 @@ async def reminder_loop():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                     if not re.search(pattern, content, re.IGNORECASE):
                         yesterday_counts[uid] += 1
+    # Build nice summary always with only one YESTERDAY heading
     mentions_list = []
     completed_list = []
     for uid, name in USER_MAPPING.items():
         count = current_counts[uid]
         required_count = get_daily_required_videos(uid)
         missing = demoted_users.get(str(uid), {}).get("missing", max(0, get_required_videos(uid) - count))
-        if count >= required_count and str(uid) not in demoted_users:
-            completed_list.append(f"<@{uid}> ({count}/{required_count})")
+        lost_roles = demoted_users.get(str(uid), {}).get("roles", [])
+        if str(uid) in demoted_users and lost_roles:
+            lost_roles_str = ", ".join(str(r) for r in lost_roles)
+            mentions_list.append(
+                f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos to restore your roles! (Roles lost: {lost_roles_str})"
+            )
+        elif count < required_count:
+            mentions_list.append(
+                f"<@{uid}> ({count}/{required_count}) — You need **{required_count - count}** more videos today!"
+            )
         else:
-            lost_roles = demoted_users.get(str(uid), {}).get("roles", [])
-            if lost_roles:
-                lost_roles_str = ", ".join(str(r) for r in lost_roles)
-                mentions_list.append(
-                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos to restore your roles! (Roles lost: {lost_roles_str})"
-                )
-            else:
-                mentions_list.append(
-                    f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos today!"
-                )
+            completed_list.append(f"<@{uid}> ({count}/{required_count})")
     yesterday_summary = [
         f"<@{uid}>: {yesterday_counts[uid]}/{get_daily_required_videos(uid)}"
         for uid in USER_MAPPING
     ]
-    # Fixed to always use the specified static built-in timestamp
     fixed_ts = 1769900400  # Your requested UNIX timestamp for 6 PM EST
-    msg = ""
-    if mentions_list or completed_list:
-        msg += "**YESTERDAY videos posted:**\n"
-        msg += "\n".join(mentions_list)
-        msg += "\n"
-        msg += "\n".join(completed_list)
-        msg += "\n\n📊 Yesterday's Uploads\n"
-        msg += "\n".join(yesterday_summary)
-        msg += f"\n\nTime remaining until next deadline (<t:{fixed_ts}:t>):"
+    msg = "**YESTERDAY videos posted:**\n"
+    msg += "\n".join(mentions_list)
+    if completed_list:
+        msg += "\n" + "\n".join(completed_list)
+    msg += "\n\n📊 Yesterday's Uploads\n"
+    msg += "\n".join(yesterday_summary)
+    msg += f"\n\nTime remaining until next deadline (<t:{fixed_ts}:t>):"
+    if mentions_list:
         msg += "\n\n⚠️ These users have been demoted. Upload your missing videos to get your roles back!"
     await channel.send(msg)
 
