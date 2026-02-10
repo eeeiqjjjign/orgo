@@ -30,7 +30,8 @@ MANAGED_ROLES = [
     1417968485031608443, 
     1427466045324787742, 
     1418029602735128586, 
-    1417970206990532730
+    1417970206990532730,
+    1417970527250677821    # <-- NEW role added
 ]
 
 USER_MAPPING = {
@@ -38,14 +39,16 @@ USER_MAPPING = {
     1157663612115107981: "Snipzy-AZ",
     1444845857701630094: "Jay",
     1458104862834167824: "Raccoon",
-    1210942252264857673: "RINGTA EMPIRE"
+    1210942252264857673: "RINGTA EMPIRE",
+    1423018852761079829: "yassin_L"         # <-- NEW user mapping (YouTube channel)
 }
 DISCORD_USERNAMES = {
     1086571236160708709: "life4x",
     1157663612115107981: ".snipzy_",
     1444845857701630094: "jiyansu",
     1458104862834167824: "zeki4life",
-    1210942252264857673: "vsxwexe"
+    1210942252264857673: "vsxwexe",
+    1423018852761079829: "unknown057908"    # <-- NEW discord username
 }
 
 SPECIAL_QUOTA = {
@@ -290,7 +293,10 @@ async def run_demotion_check():
                     "missing": required - count
                 }
                 save_demoted_data(demoted_users)
-                demotion_details.append(f"<@{uid}>: {count}/{required} videos")
+                missing_videos = required - count
+                demotion_details.append(
+                    f"<@{uid}>: {count}/{required} videos — You need {missing_videos} more video{'s' if missing_videos != 1 else ''} to restore your roles!"
+                )
                 await send_bot_log(
                     f"DEMOTED <@{uid}> ({DISCORD_USERNAMES.get(uid, '?')}) -- Removed roles: {managed_roles_ids} | "
                     f"Roles before: {roles_before} | Roles after demotion: {roles_after} | Missing: {required - count} (server: {DEMOTE_GUILD_ID})"
@@ -407,12 +413,15 @@ async def reminder_loop():
         count = current_counts[uid]
         quota_data = SPECIAL_QUOTA.get(uid, {"count": 3})
         required_count = quota_data["count"]
+        missing = max(0, required_count - count)
         if count >= required_count:
             completed_list.append(f"<@{uid}> ({count}/{required_count})")
         else:
-            mentions_list.append(f"<@{uid}> ({count}/{required_count})")
+            mentions_list.append(
+                f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more video{'s' if missing != 1 else ''} today!"
+            )
     yesterday_summary = [
-        f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}"
+        f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}" 
         for uid in USER_MAPPING
     ]
     embed = discord.Embed(
