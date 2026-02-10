@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import re
 import json
+import dateutil.parser
 
 from keep_alive import keep_alive
 
@@ -25,11 +26,11 @@ BOT_LOG_CHANNEL_ID = 1470532226209812539
 DEMOTE_GUILD_ID = 1347804635989016617
 
 MANAGED_ROLES = [
-    1417986455296278538, 
-    1417959557719654550, 
-    1417968485031608443, 
-    1427466045324787742, 
-    1418029602735128586, 
+    1417986455296278538,
+    1417959557719654550,
+    1417968485031608443,
+    1427466045324787742,
+    1418029602735128586,
     1417970206990532730,
     1417970527250677821
 ]
@@ -49,10 +50,6 @@ DISCORD_USERNAMES = {
     1458104862834167824: "zeki4life",
     1210942252264857673: "vsxwexe",
     1423018852761079829: "unknown057908"
-}
-
-SPECIAL_QUOTA = {
-    1086571236160708709: {"count": 1, "days": 3}
 }
 
 DEMOTED_USERS_FILE = "demoted_users.json"
@@ -114,7 +111,6 @@ async def send_bot_log(msg):
 
 async def recover_demoted_users_from_logs():
     global demoted_users
-    # Only recover if the file is empty
     if demoted_users:
         return
     log_channel = bot.get_channel(BOT_LOG_CHANNEL_ID)
@@ -127,7 +123,6 @@ async def recover_demoted_users_from_logs():
     temp_demoted = {}
     async for msg in log_channel.history(limit=250):
         text = msg.content
-        # DEMOTED <@id> (...) -- Removed roles: [list] ... | Missing: X (server: id)
         m = re.search(r"DEMOTED\s+<@(\d+)>\s+\([^)]+\)\s+-- Removed roles: (\[[^\]]*\]).*Missing: (\d+)", text)
         if m:
             uid = m.group(1)
@@ -137,7 +132,8 @@ async def recover_demoted_users_from_logs():
                 roles = json.loads(roles_str.replace("'", ""))
                 temp_demoted[uid] = {
                     "roles": roles,
-                    "missing": missing
+                    "missing": missing,
+                    "demoted_date": datetime.now(timezone.utc).isoformat()
                 }
             except Exception as e:
                 print(f"Failed to parse demote line: {e}")
@@ -164,16 +160,11 @@ async def check_user_restoration(uid_str):
             await send_bot_log(f"Could not fetch track_channel {VIDEO_TRACK_CHANNEL_ID} (restoration).")
             return
     deadline_utc = get_next_deadline()
-    # Look at all videos since they were demoted (for cumulative missing count)
-    days_missing = demoted_users[uid_str]["missing"]
-    last_reset = deadline_utc - timedelta(days=days_missing)
-    guild = bot.get_guild(DEMOTE_GUILD_ID)
-    if not guild:
-        await send_bot_log(f"FAILED TO FIND DEMOTION SERVER (Guild ID: {DEMOTE_GUILD_ID}) in restoration!")
-        return
     data = demoted_users[uid_str]
+    # Fix: Only check uploads since demoted_date to now
+    demoted_date = dateutil.parser.parse(data.get('demoted_date', deadline_utc.isoformat()))
     new_count = 0
-    async for msg in track_channel.history(limit=1000, after=last_reset):
+    async for msg in track_channel.history(limit=1000, after=demoted_date):
         content = ""
         if msg.content:
             content += msg.content
@@ -194,6 +185,7 @@ async def check_user_restoration(uid_str):
                     new_count += 1
     await send_bot_log(f"Restoration check for {uid}: found {new_count} new (needed {data['missing']}).")
     if new_count >= data["missing"]:
+        guild = bot.get_guild(DEMOTE_GUILD_ID)
         member = guild.get_member(uid)
         if not member:
             try:
@@ -296,12 +288,12 @@ async def run_demotion_check():
 
     demotion_details = []
     for uid, count in current_counts.items():
-        quota = SPECIAL_QUOTA.get(uid, {"count": 3})
-        required = quota["count"]
+        required = 3
         missing_today = required - count
         await send_bot_log(f"Checking user: {uid} ({DISCORD_USERNAMES.get(uid,'?')}) -- count: {count}, required: {required}")
         if str(uid) in demoted_users:
             demoted_users[str(uid)]["missing"] += max(0, missing_today)
+            demoted_users[str(uid)]["demoted_date"] = demoted_users[str(uid)].get("demoted_date", datetime.now(timezone.utc).isoformat())
             roles_to_show = demoted_users[str(uid)]["roles"]
             missing_videos = demoted_users[str(uid)]["missing"]
             demotion_details.append(
@@ -334,7 +326,8 @@ async def run_demotion_check():
                 roles_after = [role.id for role in member.roles if role.id not in managed_roles_ids]
                 demoted_users[str(uid)] = {
                     "roles": managed_roles_ids,
-                    "missing": missing_today
+                    "missing": missing_today,
+                    "demoted_date": datetime.now(timezone.utc).isoformat()
                 }
                 save_demoted_data(demoted_users)
                 demotion_details.append(
@@ -440,7 +433,7 @@ async def reminder_loop():
                 if embed.description:
                     content += f" {embed.description}"
                 if embed.author and embed.author.name:
-                    content += f" {embed.author.name}"
+                    content += f" {embed.author name}"
                 if embed.title:
                     content += f" {embed.title}"
         for uid, name in USER_MAPPING.items():
@@ -455,8 +448,7 @@ async def reminder_loop():
     completed_list = []
     for uid, name in USER_MAPPING.items():
         count = current_counts[uid]
-        quota_data = SPECIAL_QUOTA.get(uid, {"count": 3})
-        required_count = quota_data["count"]
+        required_count = 3
         missing = demoted_users.get(str(uid), {}).get("missing", max(0, required_count - count))
         if count >= required_count and str(uid) not in demoted_users:
             completed_list.append(f"<@{uid}> ({count}/{required_count})")
@@ -472,12 +464,11 @@ async def reminder_loop():
                     f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos today!"
                 )
     yesterday_summary = [
-        f"<@{uid}>: {yesterday_counts[uid]}/{SPECIAL_QUOTA.get(uid, {'count': 3})['count']}" 
+        f"<@{uid}>: {yesterday_counts[uid]}/3"
         for uid in USER_MAPPING
     ]
     msg = ""
     if mentions_list or completed_list:
-        # Plaintext (not embed): easier for copy-paste
         msg += "**YESTERDAY videos posted:**\n"
         msg += "\n".join(mentions_list)
         msg += "\n"
