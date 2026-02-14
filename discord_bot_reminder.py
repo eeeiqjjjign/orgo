@@ -32,7 +32,10 @@ MANAGED_ROLES = [
     1427466045324787742,
     1418029602735128586,
     1417970206990532730,
-    1417970527250677821
+    1417970527250677821,
+    1426759815140605952,
+    1470531939222945975,
+    1470532444590702776
 ]
 
 USER_MAPPING = {
@@ -42,6 +45,7 @@ USER_MAPPING = {
     1210942252264857673: "RINGTA EMPIRE",
     1423018852761079829: "yassin_L",
     1121372530238836738: "Raccoon",  # Replaced Zeki with Raccoon new id
+    1472079693045043337: "Akio",     # NEW USER
 }
 DISCORD_USERNAMES = {
     1086571236160708709: "life4x",
@@ -50,6 +54,7 @@ DISCORD_USERNAMES = {
     1210942252264857673: "vsxwexe",
     1423018852761079829: "unknown057908",
     1121372530238836738: "darthsae_", # Replaced zeki4life with darthsae_
+    1472079693045043337: "akiodrivenlove"
 }
 
 DEMOTED_USERS_FILE = "demoted_users.json"
@@ -166,11 +171,10 @@ async def check_user_restoration(uid_str, force_restore=False):
         await send_bot_log(f"No name in USER_MAPPING for UID {uid}, skipping restoration.")
         return
     # Get restore requirement
-    restore_req = user_video_config.get(uid_str, {}).get("restore", 3)
+    restore_req = get_required_videos(uid)
     data = demoted_users[uid_str]
     missing = data.get('missing', restore_req)
-    # Force restore if requirement is 0 or missing is 0 or forced via command
-    if restore_req == 0 or missing == 0 or force_restore:
+    if force_restore or restore_req == 0 or missing == 0:
         guild = bot.get_guild(DEMOTE_GUILD_ID)
         member = guild.get_member(uid)
         if not member:
@@ -190,7 +194,7 @@ async def check_user_restoration(uid_str, force_restore=False):
         del demoted_users[uid_str]
         save_demoted_data(demoted_users)
         await send_bot_log(f"Roles restored instantly for <@{uid}> (restore requirement set to 0).")
-        return  # Don't do further checks
+        return
     track_channel = bot.get_channel(VIDEO_TRACK_CHANNEL_ID)
     if not track_channel:
         try:
@@ -219,8 +223,12 @@ async def check_user_restoration(uid_str, force_restore=False):
             if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                 if not re.search(pattern, content, re.IGNORECASE):
                     new_count += 1
-    await send_bot_log(f"Restoration check for {uid}: found {new_count} new (needed {data['missing']}).")
-    if new_count >= data["missing"]:
+    prev_missing = data.get("missing", restore_req)
+    videos_needed = max(0, prev_missing - new_count)
+    demoted_users[uid_str]['missing'] = videos_needed
+    save_demoted_data(demoted_users)
+    await send_bot_log(f"Restoration check for {uid}: found {new_count} (needed {prev_missing}), now missing {videos_needed}.")
+    if videos_needed <= 0:
         guild = bot.get_guild(DEMOTE_GUILD_ID)
         member = guild.get_member(uid)
         if not member:
@@ -269,7 +277,6 @@ async def set_video_restore(ctx, user_id: int, num: int):
     user_video_config[str(user_id)]["restore"] = num
     save_user_video_config(user_video_config)
     await ctx.send(f"✅ <@{user_id}> restore requirement set to {num} videos.")
-    # IMMEDIATE RESTORE if set to 0 for demoted user
     if num == 0 and str(user_id) in demoted_users:
         await check_user_restoration(str(user_id), force_restore=True)
 
@@ -386,7 +393,6 @@ async def auto_restore_error(ctx, error):
 @bot.command(name="force_demote")
 @commands.check(is_owner)
 async def force_demote(ctx, user_id: int, restore_amount: int):
-    """Force-demote a user and set their restore amount, regardless of status."""
     if restore_amount < 0:
         await ctx.send("❌ Restore amount must be >= 0.")
         return
@@ -646,25 +652,33 @@ async def reminder_loop():
                 if any(term in content.lower() for term in ["posted", "new video", "youtu.be", "youtube.com"]):
                     if not re.search(pattern, content, re.IGNORECASE):
                         yesterday_counts[uid] += 1
-    # Build nice summary always with only one YESTERDAY heading
+    # Build nice summary always with only one YESTERDAY heading (revised output)
     mentions_list = []
     completed_list = []
     for uid, name in USER_MAPPING.items():
         count = current_counts[uid]
         required_count = get_daily_required_videos(uid)
-        missing = demoted_users.get(str(uid), {}).get("missing", max(0, get_required_videos(uid) - count))
         lost_roles = demoted_users.get(str(uid), {}).get("roles", [])
+        missing = demoted_users.get(str(uid), {}).get("missing", 0)
         if str(uid) in demoted_users and lost_roles:
             lost_roles_str = ", ".join(str(r) for r in lost_roles)
-            mentions_list.append(
-                f"<@{uid}> ({count}/{required_count}) — You need **{missing}** more videos to restore your roles! (Roles lost: {lost_roles_str})"
+            demote_msg = (
+                f"<@{uid}> — 🛑 **Demoted!**\n"
+                f"  • **Videos needed to RESTORE roles:** {missing}\n"
+                f"  • **Today's uploads:** {count}/{required_count}"
             )
+            if count < required_count:
+                demote_msg += f" (**{required_count - count} more needed today!**)"
+            else:
+                demote_msg += f" (Today's quota complete!)"
+            demote_msg += f"\n  • **Roles lost:** {lost_roles_str}"
+            mentions_list.append(demote_msg)
         elif count < required_count:
             mentions_list.append(
                 f"<@{uid}> ({count}/{required_count}) — You need **{required_count - count}** more videos today!"
             )
         else:
-            completed_list.append(f"<@{uid}> ({count}/{required_count})")
+            completed_list.append(f"<@{uid}> ({count}/{required_count}) — All set!")
     yesterday_summary = [
         f"<@{uid}>: {yesterday_counts[uid]}/{get_daily_required_videos(uid)}"
         for uid in USER_MAPPING
