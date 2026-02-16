@@ -696,6 +696,9 @@ async def on_ready():
     if not reminder_loop.is_running():
         reminder_loop.start()
 
+from script_helper import ScriptHelperCog
+bot.add_cog(ScriptHelperCog(bot))
+
 if __name__ == "__main__":
     token = os.environ.get("DISCORD_BOT_TOKEN")
     if token:
