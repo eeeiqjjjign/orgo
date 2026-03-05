@@ -3,6 +3,7 @@ from discord.ext import commands
 import re
 from datetime import datetime
 
+GUILD_ID = 1347804635989016617
 CHANNEL_ID = 1417960723363008722
 OWNER_ID = 608461552034643992
 OWNER_USERNAME = "ringta"
@@ -22,7 +23,6 @@ GAME_ALIASES = {
     "99 nights": ["99 nights", "99night", "99nights", "forest"],
     "dead rails": ["dead rails", "deadrails"],
 }
-HELP_CHANNEL = "https://discord.com/channels/1347804635989016617/1417843895546413187"
 COOLDOWNS = {}
 
 class ScriptHelperCog(commands.Cog):
@@ -41,24 +41,31 @@ class ScriptHelperCog(commands.Cog):
         now = datetime.utcnow()
         if user_id in COOLDOWNS:
             last = COOLDOWNS[user_id]
-            if (now - last).total_seconds() < 30:
+            if (now - last).total_seconds() < 15:
                 return False
         COOLDOWNS[user_id] = now
         return True
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
+        if (
+            message.author.bot or
+            message.guild is None or
+            message.guild.id != GUILD_ID or
+            message.channel.id != CHANNEL_ID
+        ):
             return
-        if message.channel.id != CHANNEL_ID:
-            return
+
         user_id = message.author.id
         content = message.content.lower()
+
         if not self.check_cooldown(user_id):
             return
+
         script_name = self.find_script_name(content)
         is_asking_for_script = False
         is_script_not_working = False
+
         not_working_patterns = [
             r"why.*\b({game})\b.*script.*not\s*work",
             r"({game}).*script.*not\s*work",
@@ -87,6 +94,7 @@ class ScriptHelperCog(commands.Cog):
             ]
             if script_name and any(phrase in content for phrase in generic_error_phrases):
                 is_script_not_working = True
+
         for_keyword = [
             r"where.?s the ({game}) script",
             r"(?:where to get|where.?s|get|link to|the script for|have|want).+({game})",
@@ -105,13 +113,18 @@ class ScriptHelperCog(commands.Cog):
             generic_want_words = ["where", "script"]
             if all(x in content for x in generic_want_words) and script_name in content:
                 is_asking_for_script = True
+
         if is_script_not_working:
             reply = (
-                f"Make sure you used the correct script in <{HELP_CHANNEL}>. "
+                f"Make sure you used the correct script above. "
                 f"If the error still continues, DM <@{OWNER_ID}> or ping {OWNER_USERNAME}."
             )
             await message.reply(reply, mention_author=True)
             return
+
         if is_asking_for_script and script_name in SCRIPT_LINKS:
             await message.reply(SCRIPT_LINKS[script_name], mention_author=True)
             return
+
+def setup(bot):
+    bot.add_cog(ScriptHelperCog(bot))
